@@ -1,0 +1,221 @@
+import CryptoKit
+import Foundation
+import LocalAuthentication
+
+let usage = """
+fob — Secure Enclave SSH keys gated by Touch ID
+
+USAGE:
+  fob generate <name> [--require-biometry]
+      Create a new Secure Enclave key. By default any user-presence check
+      (Touch ID, Apple Watch, or password) unlocks it; --require-biometry
+      restricts it to the currently enrolled fingerprints only.
+
+  fob setup [<alias>] [[user@]host] [--require-biometry] [--manual]
+      Guided setup for one remote host: create the key, install it on the
+      server (ssh-copy-id), add a Host entry to ~/.ssh/config, and verify.
+      Prompts for anything not given on the command line.
+      --manual only creates and exports the key, then prints the remaining
+      commands for you to inspect and run yourself — nothing is executed
+      and ~/.ssh/config is not touched.
+
+  fob list
+      Print the public keys in authorized_keys format.
+
+  fob pin <name> <host>
+      Pin a key to a host: the agent will refuse to sign with this key for
+      any other destination, or for clients that don't identify one. Host
+      keys are taken from ~/.ssh/known_hosts (connect once first). Pinning
+      the same key to another host adds to the allowed set.
+
+  fob unpin <name>
+      Remove all pins from a key.
+
+  fob reuse <name> <seconds|off>
+      After one approval, sign without re-prompting for up to <seconds>
+      (max 300) — for git/rsync bursts. Every reused signature is still
+      pin-checked, notified, and audited.
+
+  fob policy
+      Show the pinning and reuse policy of every key.
+
+  fob audit [--verify]
+      Show recent agent decisions (sign/deny/refuse/bind) from the
+      tamper-evident audit log; --verify checks the log's hash chain.
+
+  fob test-sign <name>
+      Sign test data with a key (prompts for Touch ID) and verify it.
+
+  fob agent
+      Run the ssh-agent in the foreground.
+
+  fob install
+      Register the agent with launchd so it starts at login.
+
+  fob uninstall
+      Unregister the launchd agent.
+
+SETUP (after generate + install), add to ~/.ssh/config:
+  Host *
+    IdentityAgent ~/.fob/agent.sock
+"""
+
+func fail(_ message: String) -> Never {
+    fflush(stdout) // keep buffered output ahead of the error line
+    FileHandle.standardError.write(Data("error: \(message)\n".utf8))
+    exit(1)
+}
+
+let arguments = Array(CommandLine.arguments.dropFirst())
+
+do {
+    let store = try KeyStore.default()
+    switch arguments.first {
+    case "generate":
+        var rest = Array(arguments.dropFirst())
+        let requireBiometry = rest.contains("--require-biometry")
+        rest.removeAll { $0 == "--require-biometry" }
+        guard let name = rest.first, rest.count == 1 else {
+            fail("usage: fob generate <name> [--require-biometry]")
+        }
+        let key = try store.create(name: name, requireBiometry: requireBiometry)
+        let line = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)")
+        print("Created Secure Enclave key '\(name)'.")
+        print("")
+        print(line)
+        print("")
+        print("Add the line above to the server's ~/.ssh/authorized_keys (or GitHub).")
+        print("Protection: \(requireBiometry ? "Touch ID only (currently enrolled fingerprints)" : "user presence (Touch ID, Apple Watch, or password)")")
+
+    case "setup":
+        try Setup.run(store: store, arguments: Array(arguments.dropFirst()))
+
+    case "list":
+        let keys = try store.all()
+        if keys.isEmpty {
+            print("No keys yet. Create one with: fob generate <name>")
+        }
+        for key in keys {
+            print(SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(key.name)"))
+        }
+
+    case "pin":
+        let rest = Array(arguments.dropFirst())
+        guard rest.count == 2 else { fail("usage: fob pin <name> <host>") }
+        let (name, host) = (rest[0], rest[1])
+        let key = try store.find(name: name)
+        let hostKeys = HostResolver.knownHostKeys(for: host)
+        guard !hostKeys.isEmpty else {
+            fail("no host keys for '\(host)' in ~/.ssh/known_hosts — connect once (ssh \(host)) and retry")
+        }
+        var policy = store.policy(name: key.name)
+        let added = hostKeys.filter { !policy.pinnedHostKeys.contains($0) }
+        policy.pinnedHostKeys.append(contentsOf: added)
+        try store.savePolicy(policy, name: key.name)
+        print("Pinned key '\(key.name)' to \(host) (\(added.count) new host key(s), \(policy.pinnedHostKeys.count) total).")
+        print("The agent now refuses this key for any other destination — including")
+        print("clients that don't identify their destination (older than OpenSSH 8.9).")
+
+    case "unpin":
+        guard let name = arguments.dropFirst().first, arguments.count == 2 else {
+            fail("usage: fob unpin <name>")
+        }
+        let key = try store.find(name: name)
+        var policy = store.policy(name: key.name)
+        policy.pinnedHostKeys = []
+        try store.savePolicy(policy, name: key.name)
+        print("Removed all pins from key '\(key.name)'.")
+
+    case "reuse":
+        let rest = Array(arguments.dropFirst())
+        guard rest.count == 2 else { fail("usage: fob reuse <name> <seconds|off>") }
+        let key = try store.find(name: rest[0])
+        var policy = store.policy(name: key.name)
+        if rest[1] == "off" {
+            policy.reuseSeconds = nil
+            try store.savePolicy(policy, name: key.name)
+            print("Key '\(key.name)' now requires a touch for every signature.")
+        } else {
+            guard let seconds = Double(rest[1]), seconds >= 1, seconds <= 300 else {
+                fail("reuse window must be 1–300 seconds, or 'off'")
+            }
+            policy.reuseSeconds = seconds
+            try store.savePolicy(policy, name: key.name)
+            print("Key '\(key.name)': one approval now counts for \(Int(seconds))s of signatures.")
+        }
+
+    case "policy":
+        let keys = try store.all()
+        if keys.isEmpty { print("No keys yet.") }
+        for key in keys {
+            let policy = store.policy(name: key.name)
+            var parts: [String] = []
+            if policy.pinnedHostKeys.isEmpty {
+                parts.append("not pinned (any destination)")
+            } else {
+                let names = policy.pinnedHostKeys
+                    .map { HostResolver.name(forHostKeyBlob: $0) ?? "unknown host key" }
+                parts.append("pinned to \(Set(names).sorted().joined(separator: ", "))")
+            }
+            if let reuse = policy.reuseSeconds, reuse > 0 {
+                parts.append("touch reuse \(Int(reuse))s")
+            } else {
+                parts.append("touch every time")
+            }
+            print("\(key.name): \(parts.joined(separator: "; "))")
+        }
+
+    case "audit":
+        if arguments.dropFirst().first == "--verify" {
+            let entries = AuditLog.entries(directory: store.directory)
+            if let broken = AuditLog.firstBrokenLink(directory: store.directory) {
+                fail("audit log TAMPERED: hash chain breaks at line \(broken) of \(entries.count)")
+            }
+            print("Audit log intact: \(entries.count) entries, hash chain verified.")
+        } else {
+            let entries = AuditLog.entries(directory: store.directory).suffix(20)
+            if entries.isEmpty { print("No audit entries yet.") }
+            for entry in entries {
+                var line = "\(entry.ts)  \(entry.event)"
+                if let key = entry.key { line += "  key=\(key)" }
+                if let dest = entry.dest { line += "  dest=\(dest)" }
+                if let peer = entry.peer { line += "  peer=\(peer)" }
+                print(line)
+            }
+        }
+
+    case "test-sign":
+        guard let name = arguments.dropFirst().first else {
+            fail("usage: fob test-sign <name>")
+        }
+        let key = try store.find(name: name)
+        let context = LAContext()
+        context.localizedReason = "test-sign with key \"\(name)\""
+        let payload = Data("fob test payload".utf8)
+        let signature = try key.privateKey(context: context).signature(for: payload)
+        guard try key.publicKey().isValidSignature(signature, for: payload) else {
+            fail("signature did not verify")
+        }
+        print("OK — signed with '\(name)' and verified.")
+
+    case "agent":
+        try Agent(store: store).run()
+
+    case "install":
+        try Launchd.install(store: store)
+        print("Agent installed and started (label: \(Launchd.label)).")
+        print("")
+        print("Point ssh at it by adding to ~/.ssh/config:")
+        print("  Host *")
+        print("    IdentityAgent \(store.socketPath)")
+
+    case "uninstall":
+        try Launchd.uninstall()
+        print("Agent uninstalled.")
+
+    default:
+        print(usage)
+    }
+} catch {
+    fail(error.localizedDescription)
+}

@@ -1,0 +1,131 @@
+import CryptoKit
+import Foundation
+import LocalAuthentication
+import Security
+
+/// A Secure Enclave key persisted as its encrypted `dataRepresentation` blob on disk.
+/// The blob is only usable by the Secure Enclave of this machine; it is not key material.
+struct StoredKey {
+    let name: String
+    let dataRepresentation: Data
+
+    func privateKey(context: LAContext? = nil) throws -> SecureEnclave.P256.Signing.PrivateKey {
+        try SecureEnclave.P256.Signing.PrivateKey(
+            dataRepresentation: dataRepresentation,
+            authenticationContext: context
+        )
+    }
+
+    /// Public key access never prompts for authentication.
+    func publicKey() throws -> P256.Signing.PublicKey {
+        try privateKey().publicKey
+    }
+}
+
+struct KeyStore {
+    let directory: URL
+
+    static func `default`() throws -> KeyStore {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".fob")
+        try FileManager.default.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let keysDir = dir.appendingPathComponent("keys")
+        try FileManager.default.createDirectory(
+            at: keysDir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        return KeyStore(directory: dir)
+    }
+
+    var keysDirectory: URL { directory.appendingPathComponent("keys") }
+    var socketPath: String { directory.appendingPathComponent("agent.sock").path }
+
+    func create(name: String, requireBiometry: Bool) throws -> StoredKey {
+        guard SecureEnclave.isAvailable else {
+            throw KeyStoreError.secureEnclaveUnavailable
+        }
+        // No leading '-': these names end up as CLI arguments (ssh <alias>, -i <file>)
+        // and must never be parseable as an option.
+        guard name.range(of: "^[A-Za-z0-9._][A-Za-z0-9._-]*$", options: .regularExpression) != nil else {
+            throw KeyStoreError.invalidName(name)
+        }
+        let keyURL = keysDirectory.appendingPathComponent("\(name).key")
+        guard !FileManager.default.fileExists(atPath: keyURL.path) else {
+            throw KeyStoreError.keyExists(name)
+        }
+
+        let flags: SecAccessControlCreateFlags = requireBiometry
+            ? [.privateKeyUsage, .biometryCurrentSet]
+            : [.privateKeyUsage, .userPresence]
+        var acError: Unmanaged<CFError>?
+        guard let accessControl = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            flags,
+            &acError
+        ) else {
+            let message = acError.map { String(describing: $0.takeRetainedValue()) } ?? "unknown"
+            throw KeyStoreError.accessControl(message)
+        }
+
+        let privateKey = try SecureEnclave.P256.Signing.PrivateKey(accessControl: accessControl)
+        try privateKey.dataRepresentation.write(to: keyURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+
+        let key = StoredKey(name: name, dataRepresentation: privateKey.dataRepresentation)
+        let pubLine = SSHFormat.authorizedKeysLine(privateKey.publicKey, comment: "fob:\(name)")
+        try Data((pubLine + "\n").utf8).write(to: keysDirectory.appendingPathComponent("\(name).pub"))
+        return key
+    }
+
+    func all() throws -> [StoredKey] {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: keysDirectory,
+            includingPropertiesForKeys: nil
+        )
+        return try files
+            .filter { $0.pathExtension == "key" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .map { url in
+                StoredKey(
+                    name: url.deletingPathExtension().lastPathComponent,
+                    dataRepresentation: try Data(contentsOf: url)
+                )
+            }
+    }
+
+    func find(name: String) throws -> StoredKey {
+        guard let key = try all().first(where: { $0.name == name }) else {
+            throw KeyStoreError.notFound(name)
+        }
+        return key
+    }
+}
+
+enum KeyStoreError: LocalizedError {
+    case secureEnclaveUnavailable
+    case accessControl(String)
+    case keyExists(String)
+    case notFound(String)
+    case invalidName(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .secureEnclaveUnavailable:
+            return "Secure Enclave is not available on this machine"
+        case .accessControl(let message):
+            return "failed to create access control: \(message)"
+        case .keyExists(let name):
+            return "a key named '\(name)' already exists"
+        case .notFound(let name):
+            return "no key named '\(name)'"
+        case .invalidName(let name):
+            return "invalid key name '\(name)' (letters, digits, '.', '_', '-'; must not start with '-')"
+        }
+    }
+}
