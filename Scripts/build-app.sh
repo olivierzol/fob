@@ -31,6 +31,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/FobApp" "$APP/Contents/MacOS/fob"       # the menu-bar app (CFBundleExecutable)
 cp "$BIN_DIR/fob"    "$APP/Contents/MacOS/fob-cli"   # the CLI, bundled so it ships together
 
+[[ -f Resources/fob.icns ]] || ./Scripts/make-icon.sh   # regenerate if missing
+cp Resources/fob.icns "$APP/Contents/Resources/fob.icns" # used for the Dock/notification icon
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +43,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>                <string>fob</string>
     <key>CFBundleDisplayName</key>         <string>fob</string>
     <key>CFBundleExecutable</key>          <string>fob</string>
+    <key>CFBundleIconFile</key>            <string>fob</string>
     <key>CFBundlePackageType</key>         <string>APPL</string>
     <key>CFBundleShortVersionString</key>  <string>$VERSION</string>
     <key>CFBundleVersion</key>             <string>$BUILD_NUMBER</string>
