@@ -1,4 +1,5 @@
 import CryptoKit
+import FobKit
 import Foundation
 import LocalAuthentication
 
@@ -46,18 +47,28 @@ USAGE:
   fob test-sign <name>
       Sign test data with a key (prompts for Touch ID) and verify it.
 
-  fob agent
-      Run the ssh-agent in the foreground.
-
   fob install
-      Register the agent with launchd so it starts at login.
+      Print how to install the fob.app menu-bar agent.
 
   fob uninstall
-      Unregister the launchd agent.
+      Remove the legacy launchd agent (dev.fob.agent), if present.
 
-SETUP (after generate + install), add to ~/.ssh/config:
+The agent runs inside fob.app (menu bar). Build and install it with:
+  ./Scripts/build-app.sh
+then open fob.app and enable "Launch at Login". Point ssh at it with:
   Host *
     IdentityAgent ~/.fob/agent.sock
+"""
+
+let installHelp = """
+The fob agent now runs inside fob.app (menu bar), not the CLI.
+
+To install it:
+  ./Scripts/build-app.sh        # builds fob.app and copies it to ~/Applications
+  open ~/Applications/fob.app    # then enable "Launch at Login" from the menu
+
+If you previously ran the CLI agent under launchd, remove it first:
+  fob uninstall
 """
 
 func fail(_ message: String) -> Never {
@@ -199,19 +210,19 @@ do {
         print("OK — signed with '\(name)' and verified.")
 
     case "agent":
-        try Agent(store: store).run()
+        // The agent runs inside fob.app now. A single-instance lock already stops
+        // two agents from racing on the socket; this refusal makes the intent
+        // explicit and keeps a stray `fob agent` (e.g. an old launchd job) from
+        // ever taking over.
+        fail("`fob agent` is disabled — the agent runs inside fob.app.\n\n\(installHelp)")
 
     case "install":
-        try Launchd.install(store: store)
-        print("Agent installed and started (label: \(Launchd.label)).")
-        print("")
-        print("Point ssh at it by adding to ~/.ssh/config:")
-        print("  Host *")
-        print("    IdentityAgent \(store.socketPath)")
+        print(installHelp)
 
     case "uninstall":
         try Launchd.uninstall()
-        print("Agent uninstalled.")
+        print("Removed the legacy launchd agent (\(Launchd.label)), if it was present.")
+        print("The agent now runs inside fob.app — open it and enable \"Launch at Login\".")
 
     default:
         print(usage)

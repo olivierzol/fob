@@ -3,17 +3,22 @@ import Foundation
 
 /// Per-key signing policy, stored next to the key blob as <name>.policy (JSON).
 /// Absent file = default policy (no pinning, touch required every time).
-struct KeyPolicy: Codable {
+public struct KeyPolicy: Codable {
     /// Host-key blobs this key may sign for. Empty = any destination.
     /// Non-empty = the agent refuses unbound connections and any destination
     /// whose (verified) host key is not in this list.
-    var pinnedHostKeys: [Data] = []
+    public var pinnedHostKeys: [Data] = []
 
     /// Seconds a successful Touch ID may be reused without re-prompting (max 300).
     /// nil/0 = touch required for every signature. Applies to Touch ID only.
-    var reuseSeconds: Double?
+    public var reuseSeconds: Double?
 
-    var isDefault: Bool { pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0 }
+    public var isDefault: Bool { pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0 }
+
+    public init(pinnedHostKeys: [Data] = [], reuseSeconds: Double? = nil) {
+        self.pinnedHostKeys = pinnedHostKeys
+        self.reuseSeconds = reuseSeconds
+    }
 }
 
 extension KeyStore {
@@ -22,14 +27,14 @@ extension KeyStore {
     }
 
     /// Never throws: an unreadable/corrupt policy degrades to the default (open) policy.
-    func policy(name: String) -> KeyPolicy {
+    public func policy(name: String) -> KeyPolicy {
         guard let data = try? Data(contentsOf: policyURL(name: name)),
               let policy = try? JSONDecoder().decode(KeyPolicy.self, from: data)
         else { return KeyPolicy() }
         return policy
     }
 
-    func savePolicy(_ policy: KeyPolicy, name: String) throws {
+    public func savePolicy(_ policy: KeyPolicy, name: String) throws {
         let url = policyURL(name: name)
         if policy.isDefault {
             try? FileManager.default.removeItem(at: url)
@@ -45,7 +50,7 @@ extension KeyStore {
 extension HostResolver {
     /// All host-key blobs recorded for `host` in ~/.ssh/known_hosts.
     /// Matches plain entries, `[host]:port` entries, and hashed (`|1|…`) entries.
-    static func knownHostKeys(for host: String) -> [Data] {
+    public static func knownHostKeys(for host: String) -> [Data] {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".ssh/known_hosts")
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return [] }

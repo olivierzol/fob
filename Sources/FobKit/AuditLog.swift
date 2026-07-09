@@ -7,13 +7,13 @@ import Foundation
 /// `prev`: the SHA-256 of the previous line's exact bytes ("genesis" for the
 /// first). Editing or deleting any line breaks the chain for every line after
 /// it, which `fob audit --verify` detects.
-final class AuditLog {
-    struct Entry: Codable {
-        let ts: String
-        let event: String
-        let key: String?
-        let dest: String?
-        let peer: String?
+public final class AuditLog {
+    public struct Entry: Codable {
+        public let ts: String
+        public let event: String
+        public let key: String?
+        public let dest: String?
+        public let peer: String?
         let prev: String
     }
 
@@ -26,7 +26,7 @@ final class AuditLog {
         lastHash = Self.chainHead(url: url)
     }
 
-    static func logURL(directory: URL) -> URL {
+    public static func logURL(directory: URL) -> URL {
         directory.appendingPathComponent("audit.log")
     }
 
@@ -51,13 +51,13 @@ final class AuditLog {
                                            attributes: [.posixPermissions: 0o600])
         }
         guard let handle = try? FileHandle(forWritingTo: url) else { return nil }
-        try? handle.seekToEnd()
+        _ = try? handle.seekToEnd()
         return handle
     }
 
     // MARK: - Reading & verification (also used by the CLI)
 
-    static func entries(directory: URL) -> [Entry] {
+    public static func entries(directory: URL) -> [Entry] {
         rawLines(directory: directory).compactMap {
             try? JSONDecoder().decode(Entry.self, from: $0)
         }
@@ -65,7 +65,7 @@ final class AuditLog {
 
     /// Walks the hash chain. Returns the 1-based line number of the first broken
     /// link, or nil if the whole log is intact.
-    static func firstBrokenLink(directory: URL) -> Int? {
+    public static func firstBrokenLink(directory: URL) -> Int? {
         var expected = "genesis"
         for (index, line) in rawLines(directory: directory).enumerated() {
             guard let entry = try? JSONDecoder().decode(Entry.self, from: line),

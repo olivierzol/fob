@@ -3,6 +3,9 @@
 .swiftpm/
 Package.resolved
 
+# Built app bundle (produced by Scripts/build-app.sh)
+fob.app/
+
 # macOS
 .DS_Store
 

@@ -5,6 +5,8 @@ let package = Package(
     name: "fob",
     platforms: [.macOS(.v13)],
     targets: [
-        .executableTarget(name: "fob", path: "Sources/fob")
+        .target(name: "FobKit", path: "Sources/FobKit"),
+        .executableTarget(name: "fob", dependencies: ["FobKit"], path: "Sources/fob"),
+        .executableTarget(name: "FobApp", dependencies: ["FobKit"], path: "Sources/FobApp"),
     ]
 )

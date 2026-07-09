@@ -5,11 +5,11 @@ import Security
 
 /// A Secure Enclave key persisted as its encrypted `dataRepresentation` blob on disk.
 /// The blob is only usable by the Secure Enclave of this machine; it is not key material.
-struct StoredKey {
-    let name: String
+public struct StoredKey {
+    public let name: String
     let dataRepresentation: Data
 
-    func privateKey(context: LAContext? = nil) throws -> SecureEnclave.P256.Signing.PrivateKey {
+    public func privateKey(context: LAContext? = nil) throws -> SecureEnclave.P256.Signing.PrivateKey {
         try SecureEnclave.P256.Signing.PrivateKey(
             dataRepresentation: dataRepresentation,
             authenticationContext: context
@@ -17,15 +17,15 @@ struct StoredKey {
     }
 
     /// Public key access never prompts for authentication.
-    func publicKey() throws -> P256.Signing.PublicKey {
+    public func publicKey() throws -> P256.Signing.PublicKey {
         try privateKey().publicKey
     }
 }
 
-struct KeyStore {
-    let directory: URL
+public struct KeyStore {
+    public let directory: URL
 
-    static func `default`() throws -> KeyStore {
+    public static func `default`() throws -> KeyStore {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".fob")
         try FileManager.default.createDirectory(
@@ -42,10 +42,10 @@ struct KeyStore {
         return KeyStore(directory: dir)
     }
 
-    var keysDirectory: URL { directory.appendingPathComponent("keys") }
-    var socketPath: String { directory.appendingPathComponent("agent.sock").path }
+    public var keysDirectory: URL { directory.appendingPathComponent("keys") }
+    public var socketPath: String { directory.appendingPathComponent("agent.sock").path }
 
-    func create(name: String, requireBiometry: Bool) throws -> StoredKey {
+    public func create(name: String, requireBiometry: Bool) throws -> StoredKey {
         guard SecureEnclave.isAvailable else {
             throw KeyStoreError.secureEnclaveUnavailable
         }
@@ -83,7 +83,7 @@ struct KeyStore {
         return key
     }
 
-    func all() throws -> [StoredKey] {
+    public func all() throws -> [StoredKey] {
         let files = try FileManager.default.contentsOfDirectory(
             at: keysDirectory,
             includingPropertiesForKeys: nil
@@ -99,22 +99,36 @@ struct KeyStore {
             }
     }
 
-    func find(name: String) throws -> StoredKey {
+    public func find(name: String) throws -> StoredKey {
         guard let key = try all().first(where: { $0.name == name }) else {
             throw KeyStoreError.notFound(name)
         }
         return key
     }
+
+    /// Delete a key and everything the store keeps beside it (public key + policy).
+    /// The Secure Enclave private key is unrecoverable afterwards. The exported
+    /// ~/.ssh/fob_<name>.pub (written by `setup`) is left alone — it lives in the
+    /// user's ssh directory, not the store.
+    public func remove(name: String) throws {
+        _ = try find(name: name) // 404s cleanly if the key doesn't exist
+        for ext in ["key", "pub", "policy"] {
+            let url = keysDirectory.appendingPathComponent("\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
+    }
 }
 
-enum KeyStoreError: LocalizedError {
+public enum KeyStoreError: LocalizedError {
     case secureEnclaveUnavailable
     case accessControl(String)
     case keyExists(String)
     case notFound(String)
     case invalidName(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .secureEnclaveUnavailable:
             return "Secure Enclave is not available on this machine"

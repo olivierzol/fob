@@ -1,3 +1,4 @@
+import FobKit
 import Foundation
 
 /// Guided end-to-end setup for one remote host: create (or reuse) an enclave key,
@@ -93,9 +94,10 @@ enum Setup {
             print("")
             var step = 3
             if !agentResponding(socketPath: store.socketPath) {
-                print("\(step). Start the agent (it is not running):")
+                print("\(step). Start the agent (it is not running) — open fob.app and turn on")
+                print("   \"Launch at Login\" (run `fob install` for details):")
                 print("")
-                print("     fob install")
+                print("     open ~/Applications/fob.app")
                 print("")
                 step += 1
             }
@@ -109,14 +111,12 @@ enum Setup {
             return
         }
 
-        // 4. Make sure the agent is actually running before ssh needs it.
+        // 4. The agent (fob.app) must be running before the verify step needs it.
+        //    We can't launch it for the user here, so warn and continue — ssh-copy-id
+        //    below uses password auth and doesn't need the agent.
         if !agentResponding(socketPath: store.socketPath) {
-            if confirm("The fob agent is not running. Install it now (starts at login)?") {
-                try Launchd.install(store: store)
-                print("Agent installed and started.")
-            } else {
-                print("Skipping — remember to run `fob install` before connecting.")
-            }
+            print("Note: the fob agent isn't running. Open fob.app (menu bar) and enable")
+            print("\"Launch at Login\" before the test step — see `fob install`. Continuing…")
         }
 
         // 5. Install the public key on the server. ssh-copy-id runs interactively so

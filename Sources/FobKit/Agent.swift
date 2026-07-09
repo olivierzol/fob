@@ -13,10 +13,47 @@ private enum AgentMessage: UInt8 {
     case extensionRequest = 27  // SSH_AGENTC_EXTENSION
 }
 
-final class Agent {
+/// A single decision or lifecycle moment from the agent, surfaced to any UI that
+/// sets `Agent.onEvent`. Every sign/deny/refuse/bind and the initial "listening"
+/// flows through here so the menu-bar app can show a live feed.
+public struct AgentEvent {
+    public enum Kind: String {
+        case listening, signed, signedReused, denied, refusedPin, unknownKey, bind, bindRejected
+    }
+    public let kind: Kind
+    public let message: String
+    public let key: String?
+    public let destination: String?
+    public let peer: String?
+    public let date: Date
+
+    public init(kind: Kind, message: String, key: String? = nil,
+                destination: String? = nil, peer: String? = nil, date: Date = Date()) {
+        self.kind = kind
+        self.message = message
+        self.key = key
+        self.destination = destination
+        self.peer = peer
+        self.date = date
+    }
+}
+
+/// `@unchecked Sendable`: the accept loop hands each connection to its own worker
+/// thread, and `onEvent`/`notify` are invoked from those threads. Shared mutable
+/// state (the reuse-authorization cache) is guarded by `authorizationsLock`.
+public final class Agent: @unchecked Sendable {
     private let store: KeyStore
     private let audit: AuditLog
+    private let lock: AgentLock
     private static let maxMessageSize: UInt32 = 1 << 20
+
+    /// Called for every decision/lifecycle event, on an arbitrary thread. A UI that
+    /// sets this must hop to the main thread itself. nil by default (headless).
+    public var onEvent: ((AgentEvent) -> Void)?
+
+    /// Where user-facing notifications go. Defaults to the osascript notifier so a
+    /// bare process still notifies; the app replaces this with native notifications.
+    public var notify: (String) -> Void = { Notifier.post($0) }
 
     /// Touch-reuse window: after a successful touch, the authorized LAContext is
     /// kept (per key) and reused until its deadline. This is the only way to skip
@@ -25,9 +62,18 @@ final class Agent {
     private var authorizations: [String: (context: LAContext, deadline: Date)] = [:]
     private let authorizationsLock = NSLock()
 
-    init(store: KeyStore) {
+    public init(store: KeyStore) {
         self.store = store
         self.audit = AuditLog(directory: store.directory)
+        self.lock = AgentLock(directory: store.directory)
+    }
+
+    /// Fan a decision out to both the notification sink and the live-feed observer.
+    /// `notifyUser: false` records it for the feed only (e.g. binds, "listening").
+    private func announce(_ kind: AgentEvent.Kind, _ message: String, key: String? = nil,
+                          destination: String? = nil, peer: String? = nil, notifyUser: Bool = true) {
+        if notifyUser { notify(message) }
+        onEvent?(AgentEvent(kind: kind, message: message, key: key, destination: destination, peer: peer))
     }
 
     private func cachedAuthorization(for keyName: String) -> LAContext? {
@@ -55,8 +101,9 @@ final class Agent {
         authorizations[keyName] = nil
     }
 
-    func run() throws -> Never {
+    public func run() throws -> Never {
         signal(SIGPIPE, SIG_IGN)
+        try lock.acquire() // refuses to start a second agent (throws .alreadyRunning)
         let socketPath = store.socketPath
         unlink(socketPath)
 
@@ -82,6 +129,7 @@ final class Agent {
         guard listen(fd, 16) == 0 else { throw AgentError.listen(errno) }
 
         log("listening on \(socketPath)")
+        announce(.listening, "listening on \(socketPath)", notifyUser: false)
         while true {
             let client = accept(fd, nil, nil)
             guard client >= 0 else { continue }
@@ -139,10 +187,12 @@ final class Agent {
               SessionBinding.add(binding, to: &bindings) else {
             log("rejected session-bind from \(peer) (bad signature or already bound)")
             audit.record("bind-rejected", peer: peer)
+            announce(.bindRejected, "rejected session-bind from \(peer)", peer: peer, notifyUser: false)
             return Data([AgentMessage.failure.rawValue])
         }
         log("connection from \(peer) bound to \(binding.destination)")
         audit.record("bind", destination: binding.destination, peer: peer)
+        announce(.bind, "bound to \(binding.destination)", destination: binding.destination, peer: peer, notifyUser: false)
         return Data([AgentMessage.success.rawValue])
     }
 
@@ -169,8 +219,9 @@ final class Agent {
             return SSHFormat.publicKeyBlob(publicKey) == requestedBlob
         }) else {
             log("sign request from \(peer) for \(destination) with unknown key")
-            Notifier.post("⚠️ \(peer) requested a signature for \(destination) with a key this agent does not have")
             audit.record("unknown-key", destination: destination, peer: peer)
+            announce(.unknownKey, "⚠️ \(peer) requested a signature for \(destination) with a key this agent does not have",
+                     destination: destination, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
 
@@ -181,8 +232,9 @@ final class Agent {
             guard let bound = bindings.last, bound.verified,
                   policy.pinnedHostKeys.contains(bound.hostKeyBlob) else {
                 log("REFUSED key '\(key.name)' for \(destination) (\(peer)) — key is pinned to its host")
-                Notifier.post("⛔️ Blocked: \(peer) tried to use pinned key '\(key.name)' for \(destination)")
                 audit.record("refused-pin", key: key.name, destination: destination, peer: peer)
+                announce(.refusedPin, "⛔️ Blocked: \(peer) tried to use pinned key '\(key.name)' for \(destination)",
+                         key: key.name, destination: destination, peer: peer)
                 return Data([AgentMessage.failure.rawValue])
             }
         }
@@ -193,8 +245,9 @@ final class Agent {
         if reuseWindow > 0, let cached = cachedAuthorization(for: key.name) {
             if let signature = try? key.privateKey(context: cached).signature(for: dataToSign) {
                 log("signed with key '\(key.name)' for \(destination) (\(peer)) — reuse window")
-                Notifier.post("🔑 \(peer) signed in to \(destination) with key '\(key.name)' (reuse window)")
                 audit.record("signed-reused", key: key.name, destination: destination, peer: peer)
+                announce(.signedReused, "🔑 \(peer) signed in to \(destination) with key '\(key.name)' (reuse window)",
+                         key: key.name, destination: destination, peer: peer)
                 return signResponse(signature)
             }
             dropAuthorization(for: key.name) // grant no longer valid — fall through to a fresh prompt
@@ -206,16 +259,18 @@ final class Agent {
         do {
             let signature = try key.privateKey(context: context).signature(for: dataToSign)
             log("signed with key '\(key.name)' for \(destination) (\(peer))")
-            Notifier.post("🔑 \(peer) signed in to \(destination) with key '\(key.name)'")
             audit.record("signed", key: key.name, destination: destination, peer: peer)
+            announce(.signed, "🔑 \(peer) signed in to \(destination) with key '\(key.name)'",
+                     key: key.name, destination: destination, peer: peer)
             if reuseWindow > 0 {
                 storeAuthorization(context, for: key.name, seconds: reuseWindow)
             }
             return signResponse(signature)
         } catch {
             log("signature for \(destination) with key '\(key.name)' (\(peer)) failed: \(error.localizedDescription)")
-            Notifier.post("🚫 Signature request from \(peer) for \(destination) with key '\(key.name)' was denied")
             audit.record("denied", key: key.name, destination: destination, peer: peer)
+            announce(.denied, "🚫 Signature request from \(peer) for \(destination) with key '\(key.name)' was denied",
+                     key: key.name, destination: destination, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
     }
@@ -258,18 +313,22 @@ final class Agent {
     }
 }
 
-enum AgentError: LocalizedError {
+public enum AgentError: LocalizedError {
     case socket(Int32)
     case bind(Int32)
     case listen(Int32)
     case socketPathTooLong(String)
+    case alreadyRunning
+    case lock(Int32)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .socket(let code): return "socket() failed: \(String(cString: strerror(code)))"
         case .bind(let code): return "bind() failed: \(String(cString: strerror(code)))"
         case .listen(let code): return "listen() failed: \(String(cString: strerror(code)))"
         case .socketPathTooLong(let path): return "socket path too long: \(path)"
+        case .alreadyRunning: return "another fob agent is already running (it holds the lock on agent.lock)"
+        case .lock(let code): return "could not lock agent.lock: \(String(cString: strerror(code)))"
         }
     }
 }

@@ -4,8 +4,8 @@ import Foundation
 ///
 /// A bare CLI binary has no app bundle, so UNUserNotificationCenter is unavailable;
 /// osascript is the dependency-free fallback until the phase-2 menu-bar app exists.
-enum Notifier {
-    static func post(_ body: String) {
+public enum Notifier {
+    public static func post(_ body: String) {
         let script = "display notification \"\(escape(body))\" with title \"fob\""
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")

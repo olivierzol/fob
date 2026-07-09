@@ -4,14 +4,19 @@ Your Mac as a key fob: SSH keys that live in the Secure Enclave, open only the d
 
 The private key is generated inside the Secure Enclave and never leaves it — there is no key file to steal, back up, or leak. What's stored on disk (`~/.fob/keys/`) is an encrypted blob only your machine's enclave can use. Every SSH authentication requires user presence (Touch ID, Apple Watch, or password — or strictly Touch ID with `--require-biometry`).
 
-Minimal CLI + agent, zero third-party dependencies, no GUI. Beyond basic Touch ID gating: destination-aware prompts (session-bind), per-host key pinning, opt-in touch reuse, and a tamper-evident audit log.
+A `fob` CLI plus a menu-bar app (`fob.app`) that hosts the agent, zero third-party dependencies. Beyond basic Touch ID gating: destination-aware prompts (session-bind), per-host key pinning, opt-in touch reuse, a tamper-evident audit log, and native notifications with a live sign-request feed.
 
 ## Build
 
 ```sh
-swift build -c release
-# binary at .build/release/fob
+# CLI only:
+swift build -c release          # binary at .build/release/fob
+
+# Menu-bar app (also builds and bundles the CLI), installed to ~/Applications:
+./Scripts/build-app.sh
 ```
+
+The agent runs inside `fob.app`. `./Scripts/build-app.sh` builds and ad-hoc-signs the bundle, copies it to `~/Applications/fob.app`, and symlinks the CLI to `~/.fob/bin/fob`. Open the app and turn on **Launch at login**. (For notarized distribution, swap the ad-hoc identity in the script for a Developer ID and add `--options runtime`.)
 
 ## Usage
 
@@ -43,8 +48,8 @@ fob generate mykey
 
 # 2. Add the printed public key to the server's ~/.ssh/authorized_keys (or GitHub)
 
-# 3. Start the agent at login
-fob install
+# 3. Start the agent: open fob.app and turn on "Launch at login"
+#    (build it first with ./Scripts/build-app.sh)
 
 # 4. Point ssh at the agent — add to ~/.ssh/config:
 #    Host *
@@ -54,7 +59,7 @@ fob install
 fob test-sign mykey
 ```
 
-Other commands: `list`, `pin`/`unpin`, `reuse`, `policy`, `audit`, `agent` (run in foreground), `uninstall`.
+Other commands: `list`, `pin`/`unpin`, `reuse`, `policy`, `audit`, `uninstall` (removes the legacy launchd agent). Most of these are also available from the menu-bar panel.
 
 ## What this defends against — and what it doesn't
 
@@ -86,15 +91,28 @@ Trade-off: a pinned key stops working with ssh clients older than OpenSSH 8.9 (t
 
 Every agent decision — `bind`, `signed`, `denied`, `refused-pin`, `unknown-key` — is appended to `~/.fob/audit.log` with timestamp, key, destination, and requesting process. Entries form a SHA-256 hash chain: each records the hash of the previous line, so editing or deleting history breaks the chain for everything after it. `fob audit` shows recent entries; `audit --verify` checks the chain. Honest limitation: the *newest* entry can be altered undetectably until another lands on top of it — chain-head attestation (e.g. an enclave-signed head) would be the phase-3 fix.
 
+## Menu-bar app
+
+`fob.app` is a menu-bar-only app (no Dock icon) that hosts the agent in-process. From its panel you can:
+
+- see agent status and a **live feed** of every decision (signed / denied / refused / bind) as it happens,
+- manage keys — generate, set the touch-reuse window, pin to a host / unpin, delete,
+- toggle **Launch at login** (via `SMAppService`), and reveal the audit log.
+
+Because the app owns the socket, only one agent runs at a time: startup takes an exclusive lock on `~/.fob/agent.lock`, and the CLI `fob agent` command is disabled (it points you to the app). The CLI and app share the same `~/.fob` files, so `fob pin`/`reuse`/`generate` from the terminal take effect on the running app at the next signature.
+
+Migrating from the phase-1/2 launchd agent: run `fob uninstall` to remove `dev.fob.agent`, then open `fob.app` and enable Launch at login.
+
 ## Notifications
 
 The agent posts a macOS notification for every signature event, so key usage is never silent:
 
 - 🔑 a signature was issued — including which process asked (e.g. `ssh (pid 1234)`) and for which destination (from the session binding)
 - 🚫 a signature request was denied (Touch ID canceled or failed)
+- ⛔️ a pinned key was blocked for the wrong destination
 - ⚠️ something requested a signature with a key this agent doesn't hold
 
-The requesting process is identified from the socket peer's PID. This is best-effort and spoofable in principle (PID reuse) — treat it as awareness, never proof. Notifications are posted via `osascript` (a bare CLI has no app bundle, which `UNUserNotificationCenter` requires); they appear under "Script Editor" in Notification Center settings, so allow notifications from Script Editor if you don't see them.
+The requesting process is identified from the socket peer's PID. This is best-effort and spoofable in principle (PID reuse) — treat it as awareness, never proof. The app posts **native** notifications via `UNUserNotificationCenter` (allow notifications for "fob" if you don't see them); if that's unavailable — unsigned build or denied permission — it falls back automatically to the `osascript` notifier (which appears under "Script Editor").
 
 ## Notes
 

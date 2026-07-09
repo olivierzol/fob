@@ -75,7 +75,7 @@ enum SSHWireError: LocalizedError {
     }
 }
 
-enum SSHFormat {
+public enum SSHFormat {
     static let keyType = "ecdsa-sha2-nistp256"
 
     /// SSH public key blob: string type, string curve, string EC point (uncompressed).
@@ -88,7 +88,7 @@ enum SSHFormat {
     }
 
     /// Line suitable for authorized_keys / GitHub.
-    static func authorizedKeysLine(_ publicKey: P256.Signing.PublicKey, comment: String) -> String {
+    public static func authorizedKeysLine(_ publicKey: P256.Signing.PublicKey, comment: String) -> String {
         "\(keyType) \(publicKeyBlob(publicKey).base64EncodedString()) \(comment)"
     }
 

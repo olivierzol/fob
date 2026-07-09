@@ -1,0 +1,35 @@
+import AppKit
+import SwiftUI
+import UserNotifications
+
+@main
+struct FobApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var state = AppState()
+
+    var body: some Scene {
+        MenuBarExtra("fob", systemImage: "key.fill") {
+            ContentView().environmentObject(state)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+/// Keeps the app out of the Dock and shows notification banners even while the
+/// menu-bar panel is the active window.
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory) // belt-and-suspenders alongside LSUIElement
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+}

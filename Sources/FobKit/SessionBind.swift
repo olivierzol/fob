@@ -159,8 +159,8 @@ enum HostKeySignature {
 
 /// Maps a host-key blob back to a human-readable name using ~/.ssh/known_hosts,
 /// then upgrades it to the user's ssh-config alias when one points at that host.
-enum HostResolver {
-    static func name(forHostKeyBlob blob: Data) -> String? {
+public enum HostResolver {
+    public static func name(forHostKeyBlob blob: Data) -> String? {
         guard let hostname = knownHostsName(forHostKeyBlob: blob) else { return nil }
         if let alias = configAlias(forHostName: hostname), alias != hostname {
             return "\(alias) (\(hostname))"
