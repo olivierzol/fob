@@ -135,12 +135,49 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Prompt for a host and pin, via an AppKit alert with a text field. Same reason
+    /// as `requestDelete`: a SwiftUI `.sheet` presented from the `MenuBarExtra` panel
+    /// is unreliable — submitting it dismisses the panel and leaves the sheet stuck.
+    func requestPin(name: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Pin “\(name)” to a host"
+            alert.informativeText =
+                "The agent will refuse this key for any other destination. "
+                + "The host must be in ~/.ssh/known_hosts (connect once first)."
+            alert.addButton(withTitle: "Pin")
+            alert.addButton(withTitle: "Cancel")
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+            field.placeholderString = "hostname or alias"
+            alert.accessoryView = field
+            alert.window.initialFirstResponder = field
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let host = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty else { return }
+            self.pin(name: name, toHost: host)
+            // Surface a pin failure right here — in full, and where the user is
+            // looking — instead of as a truncated line atop the panel.
+            if let err = self.actionError {
+                let fail = NSAlert()
+                fail.messageText = "Couldn’t pin “\(name)”"
+                fail.informativeText = err
+                fail.alertStyle = .warning
+                fail.runModal()
+                self.actionError = nil // shown here; don't also echo it in the header
+            }
+        }
+    }
+
     func pin(name: String, toHost host: String) {
         run { store in
             let hostKeys = HostResolver.knownHostKeys(for: host)
             guard !hostKeys.isEmpty else {
                 throw ActionError.message(
-                    "no host keys for '\(host)' in ~/.ssh/known_hosts — connect once first")
+                    "No host key for “\(host)” in ~/.ssh/known_hosts yet.\n\n"
+                    + "Pinning binds this key to the host’s public key, so the host "
+                    + "must be known first. Connect to it once — e.g. `ssh \(host)` "
+                    + "and accept the prompt — or run `fob setup \(host)`. Then pin again.")
             }
             var policy = store.policy(name: name)
             policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })

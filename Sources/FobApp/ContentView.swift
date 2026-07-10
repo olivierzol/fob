@@ -7,8 +7,6 @@ struct ContentView: View {
 
     @State private var newKeyName = ""
     @State private var newKeyBiometry = false
-    @State private var pinTarget: String?      // key name awaiting a host to pin to
-    @State private var pinHost = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -24,10 +22,6 @@ struct ContentView: View {
         }
         .padding(14)
         .frame(width: 360)
-        .sheet(item: Binding(get: { pinTarget.map(Identified.init) },
-                             set: { pinTarget = $0?.value })) { item in
-            pinSheet(keyName: item.value)
-        }
     }
 
     // MARK: - Header
@@ -50,6 +44,7 @@ struct ContentView: View {
             }
             if let err = state.actionError {
                 Text(err).font(.caption).foregroundStyle(.red).padding(.top, 2)
+                    .fixedSize(horizontal: false, vertical: true) // wrap, don't clip
             }
         }
     }
@@ -86,7 +81,7 @@ struct ContentView: View {
                 if key.isPinned {
                     Button("Unpin (allow any destination)") { state.unpin(name: key.name) }
                 }
-                Button("Pin to host…") { pinHost = ""; pinTarget = key.name }
+                Button("Pin to host…") { state.requestPin(name: key.name) }
                 Divider()
                 Button("Delete…", role: .destructive) { state.requestDelete(name: key.name) }
             } label: {
@@ -186,28 +181,6 @@ struct ContentView: View {
 
     // MARK: - Pin sheet
 
-    private func pinSheet(keyName: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Pin '\(keyName)' to a host").font(.headline)
-            Text("The agent will refuse this key for any other destination. The host must be in ~/.ssh/known_hosts (connect once first).")
-                .font(.caption).foregroundStyle(.secondary)
-            TextField("hostname or alias", text: $pinHost)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Spacer()
-                Button("Cancel") { pinTarget = nil }
-                Button("Pin") {
-                    let host = pinHost.trimmingCharacters(in: .whitespaces)
-                    guard !host.isEmpty else { return }
-                    state.pin(name: keyName, toHost: host)
-                    pinTarget = nil
-                }.keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(16)
-        .frame(width: 320)
-    }
-
     // MARK: - Helpers
 
     private static let timeFormatter: DateFormatter = {
@@ -237,10 +210,4 @@ struct ContentView: View {
         case .bind, .listening: return .secondary
         }
     }
-}
-
-/// Wraps a String so it can drive a `.sheet(item:)`.
-private struct Identified: Identifiable {
-    let value: String
-    var id: String { value }
 }
