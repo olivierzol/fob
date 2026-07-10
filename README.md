@@ -166,3 +166,9 @@ The requesting process is identified from the socket peer's PID. This is best-ef
 - Key type is `ecdsa-sha2-nistp256` only. No ed25519/RSA, no import/export — by design.
 - `--require-biometry` binds the key to the currently enrolled fingerprints; enrolling a new fingerprint invalidates it. The default (`userPresence`) also allows Apple Watch and password, which covers clamshell mode.
 - Deleting a `.key` file permanently destroys that key (nothing can recreate it).
+
+## License
+
+Copyright (C) 2026 Olivier Devaux.
+
+fob is free software licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0) — see [`LICENSE`](LICENSE). You may use, study, modify, and redistribute it, but any distributed or network-served derivative must also be released as open source under the same license.
