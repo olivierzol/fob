@@ -13,11 +13,27 @@ public struct KeyPolicy: Codable {
     /// nil/0 = touch required for every signature. Applies to Touch ID only.
     public var reuseSeconds: Double?
 
-    public var isDefault: Bool { pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0 }
+    /// SSHSIG namespaces this key may sign for (`ssh-keygen -Y sign` / git commit
+    /// signing). `nil` = any namespace allowed (the default, mirroring "no pin");
+    /// a list = only those namespaces (e.g. ["git"]); `[]` = signing disabled.
+    /// Does not affect SSH authentication, which is governed by `pinnedHostKeys`.
+    public var allowedNamespaces: [String]?
 
-    public init(pinnedHostKeys: [Data] = [], reuseSeconds: Double? = nil) {
+    public var isDefault: Bool {
+        pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0 && allowedNamespaces == nil
+    }
+
+    /// Whether an SSHSIG signature for `namespace` is permitted by this policy.
+    public func allowsSignature(namespace: String) -> Bool {
+        guard let allowedNamespaces else { return true } // nil = any
+        return allowedNamespaces.contains(namespace)
+    }
+
+    public init(pinnedHostKeys: [Data] = [], reuseSeconds: Double? = nil,
+                allowedNamespaces: [String]? = nil) {
         self.pinnedHostKeys = pinnedHostKeys
         self.reuseSeconds = reuseSeconds
+        self.allowedNamespaces = allowedNamespaces
     }
 }
 

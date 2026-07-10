@@ -104,3 +104,20 @@ public enum SSHFormat {
         return writer.data
     }
 }
+
+/// The SSHSIG signing envelope (`ssh-keygen -Y sign`, which is how git signs commits).
+/// The blob handed to the agent starts with the literal magic "SSHSIG" followed by a
+/// namespace string ("git" for commits) — letting the agent tell a *signature*
+/// operation apart from an SSH *authentication* and label / gate it accordingly.
+enum SSHSIG {
+    static let magic = Data("SSHSIG".utf8)
+
+    /// The namespace of an SSHSIG blob, or nil if `data` isn't one (e.g. it's an
+    /// ordinary SSH authentication payload, which never starts with this magic).
+    static func namespace(of data: Data) -> String? {
+        guard data.count > magic.count, data.prefix(magic.count) == magic else { return nil }
+        var reader = SSHReader(Data(data.dropFirst(magic.count)))
+        guard let namespace = try? reader.readString() else { return nil }
+        return String(decoding: namespace, as: UTF8.self)
+    }
+}
