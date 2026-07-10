@@ -11,9 +11,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="0.3.0"
-BUILD_NUMBER="3"
+BUILD_NUMBER="4"
 BUNDLE_ID="dev.fob.app"
 APP="fob.app"
+
+# Code-signing identity. Default "-" is ad-hoc: fine for local dev, but
+# UNUserNotificationCenter rejects ad-hoc apps, so notifications fall back to
+# osascript and show no fob icon. Set FOB_SIGN_IDENTITY to a "Developer ID
+# Application: …" name (or its SHA-1) for a notarizable, icon-capable build —
+# Scripts/release.sh drives the full notarize + staple flow.
+SIGN_IDENTITY="${FOB_SIGN_IDENTITY:--}"
 INSTALL_DIR="$HOME/Applications"
 CLI_DIR="$HOME/.fob/bin"
 
@@ -31,8 +38,18 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/FobApp" "$APP/Contents/MacOS/fob"       # the menu-bar app (CFBundleExecutable)
 cp "$BIN_DIR/fob"    "$APP/Contents/MacOS/fob-cli"   # the CLI, bundled so it ships together
 
-[[ -f Resources/fob.icns ]] || ./Scripts/make-icon.sh   # regenerate if missing
-cp Resources/fob.icns "$APP/Contents/Resources/fob.icns" # used for the Dock/notification icon
+# Compile the asset catalog into the bundle. A bare .icns via CFBundleIconFile is
+# enough for Finder/Dock, but Notification Center and System Settings resolve icons
+# through the asset catalog (Assets.car + CFBundleIconName) and show a blank icon
+# without one. actool emits Assets.car + AppIcon.icns from Resources/Assets.xcassets.
+[[ -d Resources/Assets.xcassets ]] || ./Scripts/make-icon.sh   # regenerate if missing
+xcrun actool Resources/Assets.xcassets \
+    --compile "$APP/Contents/Resources" \
+    --app-icon AppIcon \
+    --platform macosx \
+    --minimum-deployment-target 13.0 \
+    --output-partial-info-plist "$APP/Contents/Resources/.actool-partial.plist" >/dev/null
+rm -f "$APP/Contents/Resources/.actool-partial.plist" # keys are hard-coded in Info.plist below
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -43,7 +60,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>                <string>fob</string>
     <key>CFBundleDisplayName</key>         <string>fob</string>
     <key>CFBundleExecutable</key>          <string>fob</string>
-    <key>CFBundleIconFile</key>            <string>fob</string>
+    <key>CFBundleIconFile</key>            <string>AppIcon</string>
+    <key>CFBundleIconName</key>            <string>AppIcon</string>
     <key>CFBundlePackageType</key>         <string>APPL</string>
     <key>CFBundleShortVersionString</key>  <string>$VERSION</string>
     <key>CFBundleVersion</key>             <string>$BUILD_NUMBER</string>
@@ -54,13 +72,24 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Code signing (ad-hoc)"
-# Ad-hoc signature is enough for local use. Sign the bundled CLI first, then the
-# app, so --deep sees a consistent tree. For notarized distribution, swap the "-"
-# identity for a Developer ID and add --options runtime.
-codesign --force --sign - "$APP/Contents/MacOS/fob-cli"
-codesign --force --deep --sign - "$APP"
-codesign --verify --strict "$APP" && echo "    signature OK"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    echo "==> Code signing (ad-hoc — local only, no notification icon)"
+    # Sign the bundled CLI first, then the app, so --deep sees a consistent tree.
+    codesign --force --sign - "$APP/Contents/MacOS/fob-cli"
+    codesign --force --deep --sign - "$APP"
+else
+    echo "==> Code signing ($SIGN_IDENTITY)"
+    # Hardened runtime (--options runtime) and a secure timestamp are required for
+    # notarization; the timestamp needs Apple's TSA, so set FOB_SIGN_TIMESTAMP=0 for
+    # offline local signing (e.g. testing notifications with an Apple Development
+    # cert). Sign the nested CLI first; signing the bundle then seals it, so no
+    # --deep (Apple discourages --deep for distribution).
+    ts="--timestamp"
+    [[ "${FOB_SIGN_TIMESTAMP:-1}" == "0" ]] && ts="--timestamp=none"
+    codesign --force --options runtime "$ts" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/fob-cli"
+    codesign --force --options runtime "$ts" --sign "$SIGN_IDENTITY" "$APP"
+fi
+codesign --verify --strict --verbose=2 "$APP" && echo "    signature OK"
 
 if [[ "$install" == "1" ]]; then
     echo "==> Installing to $INSTALL_DIR/$APP"

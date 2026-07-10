@@ -20,6 +20,12 @@ struct FobApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // belt-and-suspenders alongside LSUIElement
+        // An LSUIElement app has no Dock tile, so NSApplication never loads its icon
+        // image — and Notification Center renders the running app's icon, showing a
+        // blank glyph. Set it explicitly from the bundled asset catalog.
+        if let icon = NSImage(named: "AppIcon") {
+            NSApp.applicationIconImage = icon
+        }
         if Bundle.main.bundleIdentifier != nil {
             UNUserNotificationCenter.current().delegate = self
         }

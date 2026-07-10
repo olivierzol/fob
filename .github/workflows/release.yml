@@ -1,0 +1,69 @@
+name: release
+
+# Builds, signs (Developer ID), notarizes, and publishes fob.app when you push a
+# version tag (e.g. `git tag v0.3.0 && git push --tags`). The private key and API
+# credentials live in repository secrets — never in this open-source tree.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub release
+
+jobs:
+  release:
+    runs-on: macos-14 # Apple Silicon; ships Xcode + notarytool
+    steps:
+      - uses: actions/checkout@v4
+
+      # Import the Developer ID Application cert into a throwaway keychain.
+      - name: Import signing certificate
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }} # base64 of your .p12
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }} # any string
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/fob-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # Prepend our keychain to the search list so codesign/release.sh find it.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      # Materialize the App Store Connect API key notarytool authenticates with.
+      - name: Write notarization API key
+        env:
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }} # base64 of your AuthKey_*.p8
+        run: echo "$AC_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/ac_api_key.p8"
+
+      - name: Build, sign, notarize, staple
+        id: build
+        env:
+          # Optional: pin the exact identity. If unset, release.sh auto-detects the
+          # sole "Developer ID Application" identity now in the keychain.
+          FOB_SIGN_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+          AC_API_KEY_PATH: ${{ runner.temp }}/ac_api_key.p8
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: ./Scripts/release.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.build.outputs.zip }}" \
+            --title "$GITHUB_REF_NAME" --generate-notes
+
+      # The cask lives in your tap repo (OWNER/homebrew-fob). Bump it with these:
+      - name: Cask bump values
+        run: |
+          echo "::notice::Update Casks/fob.rb in your tap to version ${{ steps.build.outputs.version }}, sha256 ${{ steps.build.outputs.sha256 }}"

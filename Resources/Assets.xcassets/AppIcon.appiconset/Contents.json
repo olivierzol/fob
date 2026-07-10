@@ -1,22 +1,3 @@
-#!/bin/bash
-#
-# Regenerates Resources/Assets.xcassets/AppIcon.appiconset from make-icon.swift.
-# Run this only when changing the icon; build-app.sh compiles the committed
-# asset catalog (via actool) into each build's Assets.car + AppIcon.icns.
-#
-set -euo pipefail
-cd "$(dirname "$0")/.."
-
-ICONSET="Resources/Assets.xcassets/AppIcon.appiconset"
-mkdir -p "$ICONSET"
-
-cat > Resources/Assets.xcassets/Contents.json <<'JSON'
-{
-  "info" : { "author" : "xcode", "version" : 1 }
-}
-JSON
-
-cat > "$ICONSET/Contents.json" <<'JSON'
 {
   "images" : [
     { "idiom" : "mac", "size" : "16x16",   "scale" : "1x", "filename" : "icon_16x16.png" },
@@ -32,7 +13,3 @@ cat > "$ICONSET/Contents.json" <<'JSON'
   ],
   "info" : { "author" : "xcode", "version" : 1 }
 }
-JSON
-
-swift Scripts/make-icon.swift "$ICONSET"
-echo "wrote $ICONSET"

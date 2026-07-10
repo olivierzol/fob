@@ -1,0 +1,35 @@
+# Homebrew cask for fob.
+#
+# Casks are served from a *tap* repo whose name starts with "homebrew-", so this
+# file's real home is a repo like OWNER/homebrew-fob (path: Casks/fob.rb). Users
+# then install with:
+#
+#   brew install --cask OWNER/fob/fob
+#
+# Replace OWNER with your GitHub account/org, and set `sha256` to the value the
+# release workflow prints (the .zip's SHA-256). Homebrew downloads the already
+# notarized + stapled .app, so Gatekeeper and notifications (with the fob icon)
+# work on every user's machine.
+cask "fob" do
+  version "0.3.0"
+  sha256 "REPLACE_WITH_RELEASE_ZIP_SHA256"
+
+  url "https://github.com/OWNER/fob/releases/download/v#{version}/fob-#{version}.zip",
+      verified: "github.com/OWNER/fob/"
+  name "fob"
+  desc "Secure Enclave SSH keys gated by Touch ID"
+  homepage "https://github.com/OWNER/fob"
+
+  depends_on macos: ">= :ventura" # matches LSMinimumSystemVersion 13.0
+
+  app "fob.app"
+  # Expose the bundled CLI on PATH as `fob`.
+  binary "#{appdir}/fob.app/Contents/MacOS/fob-cli", target: "fob"
+
+  # `brew uninstall --zap` removes user state too.
+  zap trash: [
+    "~/.fob",
+    "~/Library/Preferences/dev.fob.app.plist",
+    "~/Library/LaunchAgents/dev.fob.agent.plist", # legacy CLI-era launchd agent
+  ]
+end
