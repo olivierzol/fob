@@ -181,6 +181,14 @@ sign — and surface an error, rather than silently reverting to open.
 back to the open default. `policy(name:)` still returns the default for display
 contexts only.
 
+**Malicious tampering** (as opposed to accidental corruption) by same-UID code is
+**documented as out of scope**, matching the threat model. Policy persistence was
+refactored behind a `PolicyStore` protocol so a code-identity-gated backend can be
+added later; a data-protection-keychain backend is included but dormant (access groups
+aren't authorized for a non-sandboxed Developer ID app — it SIGKILLs). Full
+investigation and the realistic future route (a legacy `SecAccess`-ACL backend) are in
+[`docs/CONFIG-INTEGRITY.md`](docs/CONFIG-INTEGRITY.md).
+
 ---
 
 ## Low

@@ -66,8 +66,15 @@ public struct FilePolicyStore: PolicyStore {
 /// data-protection keychain, in fob's own access group. Because access is enforced by
 /// the entitlement (hence by code signature), a same-user process that isn't signed as
 /// fob cannot read, forge, or delete these — closing the "malware silently unpins a
-/// key" and "malware deletes the policy to downgrade to open" gaps that a plain file
-/// cannot. Only available in the signed build; `isAvailable()` probes for it.
+/// key" and "malware deletes the policy to downgrade to open" gaps a plain file cannot.
+///
+/// DORMANT by default and NOT active on the current builds. Keychain access groups are
+/// an App Store / sandboxed-app mechanism: a non-sandboxed Developer ID (or Apple
+/// Development) build is not authorized for the entitlement and macOS SIGKILLs it on
+/// launch. So `isAvailable()` fails and `KeyStore` falls back to files. Activating this
+/// would require sandboxing the app with a matching provisioning profile; the realistic
+/// non-sandbox route is instead a legacy `SecAccess`-ACL backend. See
+/// docs/CONFIG-INTEGRITY.md. This type is kept as a reference implementation.
 public struct KeychainPolicyStore: PolicyStore {
     private let service = "dev.fob.policy"
     private let accessGroup: String?
