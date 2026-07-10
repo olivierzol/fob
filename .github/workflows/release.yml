@@ -1,11 +1,14 @@
 name: release
 
-# Builds, signs (Developer ID), notarizes, and publishes fob.app when you push a
-# version tag (e.g. `git tag v0.3.0 && git push --tags`). The private key and API
-# credentials live in repository secrets — never in this open-source tree.
+# Builds, signs (Developer ID), notarizes, and publishes fob.app.
+#
+# MANUAL-ONLY (run it from the Actions tab). It is intentionally NOT triggered by tag
+# pushes: releases are currently cut locally with Scripts/release.sh, and the CI path
+# first needs these repo secrets configured — DEVELOPER_ID_CERT_P12,
+# DEVELOPER_ID_CERT_PASSWORD, KEYCHAIN_PASSWORD, AC_API_KEY_P8, AC_API_KEY_ID,
+# AC_API_ISSUER_ID. To enable fully-automated tag releases later, add those secrets
+# and restore the `push: { tags: ["v*"] }` trigger.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
