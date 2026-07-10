@@ -8,11 +8,24 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ICONSET="Resources/Assets.xcassets/AppIcon.appiconset"
-mkdir -p "$ICONSET"
+MENUBAR="Resources/Assets.xcassets/MenuBarKey.imageset"
+mkdir -p "$ICONSET" "$MENUBAR"
 
 cat > Resources/Assets.xcassets/Contents.json <<'JSON'
 {
   "info" : { "author" : "xcode", "version" : 1 }
+}
+JSON
+
+# Monochrome template used for the menu-bar item (adapts to light/dark menu bar).
+cat > "$MENUBAR/Contents.json" <<'JSON'
+{
+  "images" : [
+    { "idiom" : "universal", "filename" : "menubar.png", "scale" : "1x" },
+    { "idiom" : "universal", "filename" : "menubar@2x.png", "scale" : "2x" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 },
+  "properties" : { "template-rendering-intent" : "template" }
 }
 JSON
 
@@ -34,5 +47,5 @@ cat > "$ICONSET/Contents.json" <<'JSON'
 }
 JSON
 
-swift Scripts/make-icon.swift "$ICONSET"
+swift Scripts/make-icon.swift "$ICONSET" "$MENUBAR"
 echo "wrote $ICONSET"

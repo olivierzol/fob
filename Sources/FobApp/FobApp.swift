@@ -8,7 +8,7 @@ struct FobApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {
-        MenuBarExtra("fob", systemImage: "key.fill") {
+        MenuBarExtra("fob", image: "MenuBarKey") {
             ContentView().environmentObject(state)
         }
         .menuBarExtraStyle(.window)
