@@ -127,6 +127,102 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Host onboarding (the "Set up a host" window)
+
+    struct HostSetupResult {
+        let alias: String
+        let user: String
+        let host: String
+        let port: Int
+        let pubPath: String
+        let copyCommand: String   // ssh-copy-id line to run on the server
+        let configAdded: Bool     // did we add a ~/.ssh/config block?
+        let alreadyConfigured: Bool
+        let hostKnown: Bool       // host already in known_hosts → can pin now
+        var destination: String { "\(user)@\(host)" }
+    }
+
+    enum HostSetupOutcome {
+        case success(HostSetupResult)
+        case failure(String)
+    }
+
+    /// Creates (or reuses) the key, exports its public key, and writes a `~/.ssh/config`
+    /// block — everything except the one step that needs your server password
+    /// (`ssh-copy-id`) and the interactive first connection, which you do yourself.
+    func addHost(alias rawAlias: String, host rawHost: String, user rawUser: String,
+                 port: Int, requireBiometry: Bool) -> HostSetupOutcome {
+        let alias = rawAlias.trimmingCharacters(in: .whitespaces)
+        let host = rawHost.trimmingCharacters(in: .whitespaces)
+        let user = rawUser.trimmingCharacters(in: .whitespaces)
+        guard KeyStore.isValidName(alias) else {
+            return .failure("Invalid alias — use letters, digits, '.', '_', '-' (not starting with '-').")
+        }
+        guard HostSetup.isValidHostToken(host) else { return .failure("Invalid hostname.") }
+        guard HostSetup.isValidHostToken(user) else { return .failure("Invalid username.") }
+        guard (1...65535).contains(port) else { return .failure("Port must be 1–65535.") }
+        guard let store else { return .failure("Key store unavailable.") }
+        do {
+            let key: StoredKey
+            if let existing = try? store.find(name: alias) {
+                key = existing
+            } else {
+                key = try store.create(name: alias, requireBiometry: requireBiometry)
+            }
+
+            let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+            try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
+            let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
+            try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+
+            let configURL = sshDir.appendingPathComponent("config")
+            let existing = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+            let already = HostSetup.hostBlockExists(alias: alias, in: existing)
+            var configAdded = false
+            if !already {
+                let block = HostSetup.configBlock(alias: alias, host: host, user: user, port: port,
+                                                  pubPath: pubURL.path, socketPath: store.socketPath)
+                let separator = existing.isEmpty ? "" : (existing.hasSuffix("\n") ? "\n" : "\n\n")
+                try Data((existing + separator + block + "\n").utf8).write(to: configURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+                configAdded = true
+            }
+            refreshKeys()
+            var copy = ["ssh-copy-id", "-f", "-i", pubURL.path]
+            if port != 22 { copy += ["-p", String(port)] }
+            copy.append("\(user)@\(host)")
+            return .success(HostSetupResult(
+                alias: alias, user: user, host: host, port: port, pubPath: pubURL.path,
+                copyCommand: copy.joined(separator: " "),
+                configAdded: configAdded, alreadyConfigured: already,
+                hostKnown: !HostResolver.knownHostKeys(for: host, port: port).isEmpty))
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+    }
+
+    /// Pin a key to its host after the first connection has populated known_hosts.
+    /// Returns nil on success, or an error message.
+    func pinHost(alias: String, host: String, port: Int) -> String? {
+        guard let store else { return "Key store unavailable." }
+        let hostKeys = HostResolver.knownHostKeys(for: host, port: port)
+        guard !hostKeys.isEmpty else {
+            return "“\(host)” isn't in ~/.ssh/known_hosts yet — connect once (ssh \(alias)) first, then pin."
+        }
+        do {
+            var policy = store.policy(name: alias)
+            policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
+            try store.savePolicy(policy, name: alias)
+            refreshKeys()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func unpin(name: String) {
         run { store in
             var policy = store.policy(name: name)

@@ -54,6 +54,7 @@ private struct MenuAnchorKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.openWindow) private var openWindow
 
     @State private var newKeyName = ""
     @State private var newKeyBiometry = true
@@ -209,7 +210,20 @@ struct ContentView: View {
                 }
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
+            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 8)
+
+            Button {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: HostSetupView.windowID)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                    Text("Set up a remote host…")
+                }
+                .font(.system(size: 12)).foregroundStyle(Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14).padding(.bottom, 12)
         }
     }
 

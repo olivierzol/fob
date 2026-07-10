@@ -68,15 +68,9 @@ enum Setup {
         print("Public key exported to \(pubURL.path).")
 
         let destination = "\(user)@\(host)"
-        let configBlock = """
-        # added by fob setup
-        Host \(alias)
-          HostName \(host)
-          User \(user)
-          IdentityAgent \(store.socketPath)
-          IdentityFile \(pubURL.path)
-          IdentitiesOnly yes
-        """
+        let configBlock = HostSetup.configBlock(
+            alias: alias, host: host, user: user,
+            pubPath: pubURL.path, socketPath: store.socketPath)
 
         // --manual: stop here and print the remaining steps for the user to run
         // themselves. Nothing below this point is executed.
@@ -142,7 +136,7 @@ enum Setup {
         let configURL = sshDir.appendingPathComponent("config")
         let existingConfig = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
         var aliasConfigured = false
-        if hostBlockExists(alias: alias, in: existingConfig) {
+        if HostSetup.hostBlockExists(alias: alias, in: existingConfig) {
             print("")
             print("~/.ssh/config already has a `Host \(alias)` entry — leaving it untouched.")
             print("Make sure it contains:")
@@ -274,16 +268,6 @@ enum Setup {
         } == 0
     }
 
-    private static func hostBlockExists(alias: String, in config: String) -> Bool {
-        for line in config.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.lowercased().hasPrefix("host ") else { continue }
-            let patterns = trimmed.dropFirst("host ".count)
-                .split(separator: " ", omittingEmptySubsequences: true)
-            if patterns.contains(where: { $0 == Substring(alias) }) { return true }
-        }
-        return false
-    }
 }
 
 enum SetupError: LocalizedError {
