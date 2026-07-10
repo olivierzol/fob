@@ -32,6 +32,10 @@ cd "$(dirname "$0")/.."
     exit 1
 }
 
+# notarize.zip is only the temporary submission bundle — remove it on any exit so a
+# failed run doesn't leave it behind (the release artifact is fob-<version>.zip).
+trap 'rm -f notarize.zip' EXIT
+
 echo "==> Building + signing (identity: $FOB_SIGN_IDENTITY)"
 FOB_SIGN_IDENTITY="$FOB_SIGN_IDENTITY" ./Scripts/build-app.sh --no-install
 

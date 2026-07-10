@@ -32,3 +32,4 @@ audit.head.sig
 
 # Release artifacts (produced by Scripts/release.sh)
 fob-*.zip
+notarize.zip
