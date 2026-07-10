@@ -229,27 +229,28 @@ struct ContentView: View {
                 Text("Nothing yet.").font(.system(size: 11)).foregroundStyle(t.sub)
                     .padding(.horizontal, 14).padding(.bottom, 12)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(Array(state.feed.enumerated()), id: \.offset) { _, event in
-                            eventRow(event)
-                        }
+                // The last three events, each with room to read — no cramped scroller.
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(state.feed.prefix(3).enumerated()), id: \.offset) { _, event in
+                        eventRow(event)
                     }
-                    .padding(.horizontal, 14).padding(.bottom, 10)
                 }
-                .frame(maxHeight: 150)
+                .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 12)
             }
         }
     }
 
     private func eventRow(_ event: AgentEvent) -> some View {
-        HStack(alignment: .top, spacing: 9) {
+        let line = activity(event)
+        return HStack(alignment: .top, spacing: 9) {
             Text(Self.time.string(from: event.date))
                 .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(t.sub)
-                .frame(width: 58, alignment: .leading)
-            Circle().fill(color(event.kind)).frame(width: 6, height: 6).padding(.top, 3)
-            Text(activityText(event)).font(.system(size: 11.5)).foregroundStyle(t.text)
+                .frame(width: 56, alignment: .leading)
+            Circle().fill(color(event.kind)).frame(width: 6, height: 6).padding(.top, 4)
+            (Text(line.name).fontWeight(.semibold) + Text(line.rest))
+                .font(.system(size: 11.5)).foregroundStyle(t.text)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -368,12 +369,46 @@ struct ContentView: View {
         }
     }
 
-    /// The activity message, with the key name kept but rendered inline (the design
-    /// bolds the key; the agent already prefixes messages with it, so show as-is).
-    private func activityText(_ event: AgentEvent) -> String { event.message }
+    /// A "**key** · <command> <dest> · <auth>" line matching the design (the design
+    /// bolds the leading name). Built from the event's structured fields rather than
+    /// the verbose notification text.
+    private func activity(_ e: AgentEvent) -> (name: String, rest: String) {
+        let dest = destDisplay(e.destination, key: e.key)
+        let action = [peerCmd(e.peer), dest].compactMap { $0 }.joined(separator: " ")
+        let act = action.isEmpty ? "" : " · \(action)"
+        switch e.kind {
+        case .signed:        return (e.key ?? "key", "\(act) · Touch ID")
+        case .signedReused:  return (e.key ?? "key", "\(act) · reused")
+        case .denied:        return (e.key ?? "key", "\(act) · denied")
+        case .refusedPin:    return (e.key ?? "key", "\(act) · blocked (wrong host)")
+        case .refusedPolicy: return (e.key ?? "key", "\(act) · blocked (policy)")
+        case .unknownKey:    return (peerCmd(e.peer) ?? "unknown", (dest.map { " · \($0)" } ?? "") + " · unknown key")
+        case .bind:          return (dest ?? "host", " · bound")
+        case .bindRejected:  return (peerCmd(e.peer) ?? "client", " · bind rejected")
+        case .listening:     return ("agent", " · listening")
+        }
+    }
+
+    /// Requesting process without the pid: "ssh (pid 70860)" → "ssh".
+    private func peerCmd(_ p: String?) -> String? {
+        p?.components(separatedBy: " (pid").first
+    }
+
+    /// The destination to show. "bender (192.168.1.10)" → the IP when the alias equals
+    /// the key (so we don't print "bender · ssh bender"), otherwise the alias.
+    private func destDisplay(_ d: String?, key: String?) -> String? {
+        guard let d else { return nil }
+        let parts = d.components(separatedBy: " (")
+        let alias = parts.first ?? d
+        if parts.count > 1 {
+            let ip = parts[1].replacingOccurrences(of: ")", with: "")
+            return alias == key ? ip : alias
+        }
+        return alias
+    }
 
     private static let time: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "h:mm:ss a"; return f
+        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f
     }()
 
     private func color(_ kind: AgentEvent.Kind) -> Color {
