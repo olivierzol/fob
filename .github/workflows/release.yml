@@ -63,7 +63,7 @@ jobs:
             "${{ steps.build.outputs.zip }}" \
             --title "$GITHUB_REF_NAME" --generate-notes
 
-      # The cask lives in your tap repo (OWNER/homebrew-fob). Bump it with these:
+      # The cask lives in your tap repo (olivierzol/homebrew-fob). Bump it with these:
       - name: Cask bump values
         run: |
           echo "::notice::Update Casks/fob.rb in your tap to version ${{ steps.build.outputs.version }}, sha256 ${{ steps.build.outputs.sha256 }}"

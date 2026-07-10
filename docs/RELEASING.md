@@ -40,14 +40,14 @@ Add these under Settings → Secrets and variables → Actions:
 
 ### 3. Homebrew tap
 
-Casks must live in a repo named `homebrew-*`. Create `OWNER/homebrew-fob` and copy
+Casks must live in a repo named `homebrew-*`. Create `olivierzol/homebrew-fob` and copy
 [`Casks/fob.rb`](../Casks/fob.rb) into it at `Casks/fob.rb`. Users then run:
 
 ```sh
-brew install --cask OWNER/fob/fob
+brew install --cask olivierzol/fob/fob
 ```
 
-Replace `OWNER` in the cask (three places) with your GitHub account/org.
+Replace `olivierzol` in the cask (three places) with your GitHub account/org.
 
 ## Cutting a release
 
