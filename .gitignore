@@ -19,3 +19,10 @@ DerivedData/
 *.policy
 audit.log
 audit.head.sig
+
+# Signing / notarization secrets — must never be committed. Prefer a keychain
+# profile (xcrun notarytool store-credentials) so no secret lives on disk at all.
+*.p8
+*.p12
+.env
+.env.*
