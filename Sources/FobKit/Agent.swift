@@ -301,7 +301,13 @@ public final class Agent: @unchecked Sendable {
         }
 
         let context = LAContext()
-        context.localizedReason = "connect to \(destination) — requested by \(peer) with key \"\(key.name)\""
+        // macOS prepends "fob is trying to " and appends the Touch-ID/password line.
+        // Line breaks render, so lead with the destination and put the requesting
+        // process + key on a second line for readability.
+        context.localizedReason = """
+        connect to \(destination)
+        Requested by \(peer) with key “\(key.name)”
+        """
         log("sign request from \(peer) for \(destination) with key '\(key.name)' — waiting for user approval")
         do {
             let signature = try key.privateKey(context: context).signature(for: dataToSign)
