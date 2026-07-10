@@ -22,6 +22,7 @@ The private key is generated **inside the Secure Enclave and never leaves it** �
 - 🎯 **Destination-aware prompts** — see *where* you're connecting, cryptographically verified
 - 📌 **Per-host pinning** — a key refuses every host but the one it's bound to
 - ⏱️ **Opt-in touch reuse** — one touch covers a `git` / `rsync` burst
+- ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
 - 📜 **Tamper-evident audit log** — hash-chained record of every decision
 - 🖥️ **Menu-bar app + CLI** — live activity feed, guided setup, zero dependencies
 
@@ -108,6 +109,40 @@ A native notification on every event, so key use is never silent:
 | ⚠️ | something asked for a key this agent doesn't hold |
 
 Process attribution is best-effort (via the socket peer's PID) — treat it as awareness, not proof.
+
+### ✍️ Commit signing
+
+A fob key can also **sign git commits** — each `git commit` prompts Touch ID, and hosts
+that verify SSH signatures (**GitHub, GitLab, Gitea/Forgejo, Codeberg, …**) show the commit
+as **Verified**. It's standard SSH commit signing (`ssh-keygen -Y sign`), which fob's agent
+serves from the Secure Enclave — so it also verifies **locally**, host-independently, via an
+`allowed_signers` file. The same key can be **both** an *Authentication* key and a *Signing*
+key on your host (they're separate entries).
+
+```sh
+fob sign-setup <key>     # prints the exact steps below for a key you've generated
+```
+
+It walks you through three things:
+
+1. **Point the signer at fob.** `git`/`ssh-keygen` find the agent via `SSH_AUTH_SOCK`
+   (not ssh-config's `IdentityAgent`), so add to your shell profile:
+   `export SSH_AUTH_SOCK=~/.fob/agent.sock`
+2. **Configure git:** `gpg.format ssh`, `user.signingkey <the fob pubkey>`, `commit.gpgsign true`.
+3. **Register the public key on your git host as a *signing* key** — e.g. GitHub or
+   GitLab → Settings → SSH keys, added as a Signing Key (separate from an Authentication key).
+
+fob tells a signing request apart from an SSH login by the SSHSIG envelope's **namespace**
+(`git` for commits), shows a signing-specific prompt, and audits it as `signed-git`. You can
+restrict which namespaces a key may sign — the signing-side analog of pinning:
+
+```sh
+fob namespaces <key> git     # this key may only sign git commits
+fob namespaces <key> none    # disable signing entirely
+fob namespaces <key> any     # default — any namespace
+```
+
+A touch per commit adds up, so pair it with `fob reuse <key> <seconds>` for rebases/bursts.
 
 ## Security model
 

@@ -45,9 +45,10 @@ USAGE:
 
   fob sign-setup <name>
       Print how to use a key for Touch ID-gated git commit signing (SSH signing):
-      the SSH_AUTH_SOCK export, the git config, and the public key to add to
-      GitHub as a Signing Key. A key can be both an Authentication and a Signing
-      key. `git commit` then prompts Touch ID and GitHub shows "Verified".
+      the SSH_AUTH_SOCK export, the git config, and the public key to register on
+      your git host (GitHub, GitLab, Gitea/Forgejo, …) as a Signing Key. A key can
+      be both an Authentication and a Signing key. `git commit` then prompts Touch
+      ID and the host shows "Verified".
 
   fob namespaces <name> <any|none|ns1,ns2,...>
       Restrict which SSHSIG namespaces a key may sign (git commit signing uses
@@ -221,14 +222,15 @@ do {
         print("     git config --global commit.gpgsign true")
         print("     git config --global tag.gpgsign true")
         print("")
-        print("3. Add the key to GitHub → Settings → SSH and GPG keys → New SSH key,")
-        print("   with Key type: Signing Key (a separate entry from an Authentication Key):")
+        print("3. Register the key on your git host as a SIGNING key (a separate entry from")
+        print("   an Authentication key) — e.g. GitHub or GitLab → Settings → SSH keys:")
         print("     \(pubLine)")
         print("")
         print("4. (recommended) restrict this key to git signatures only:")
         print("     fob namespaces \(name) git")
         print("")
-        print("Then `git commit` prompts Touch ID via fob, and GitHub shows \"Verified\".")
+        print("Then `git commit` prompts Touch ID via fob, and your host (GitHub, GitLab,")
+        print("Gitea/Forgejo, …) shows \"Verified\". It also verifies locally via allowed_signers.")
 
     case "policy":
         let keys = try store.all()
