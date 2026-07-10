@@ -19,7 +19,7 @@ cask "fob" do
   desc "Secure Enclave SSH keys gated by Touch ID"
   homepage "https://github.com/olivierzol/fob"
 
-  depends_on macos: ">= :ventura" # matches LSMinimumSystemVersion 13.0
+  depends_on macos: :ventura # minimum macOS 13 (matches LSMinimumSystemVersion)
 
   app "fob.app"
   # Expose the bundled CLI on PATH as `fob`.
