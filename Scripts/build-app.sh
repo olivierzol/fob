@@ -10,8 +10,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.3.0"
-BUILD_NUMBER="4"
+VERSION="0.4.0"
+BUILD_NUMBER="5"
 BUNDLE_ID="dev.fob.app"
 APP="fob.app"
 
