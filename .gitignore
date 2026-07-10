@@ -9,6 +9,9 @@ fob.app/
 # macOS
 .DS_Store
 
+# Editor / IDE
+.vscode/
+
 # Xcode (in case an app target is added later)
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
