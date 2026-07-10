@@ -167,6 +167,26 @@ The requesting process is identified from the socket peer's PID. This is best-ef
 - `--require-biometry` binds the key to the currently enrolled fingerprints; enrolling a new fingerprint invalidates it. The default (`userPresence`) also allows Apple Watch and password, which covers clamshell mode.
 - Deleting a `.key` file permanently destroys that key (nothing can recreate it).
 
+## Acknowledgments
+
+We first came across the idea of keeping SSH keys in the Secure Enclave through
+[Secretive](https://github.com/maxgoedjen/secretive) by Max Goedjen (see its
+[README](https://github.com/maxgoedjen/secretive/blob/main/README.md)). We liked the
+concept — a menu-bar agent that never lets the key leave the enclave — and it's worth a
+look if fob isn't what you're after.
+
+We built fob rather than adopting it because we wanted to center a few different ideas:
+
+- **Destination-aware authorization.** fob verifies the `session-bind@openssh.com`
+  host-key signature and puts the *destination* in the Touch ID prompt ("connect to
+  marvin (192.168.1.20)"), so you approve *where* you're connecting — not just *that*
+  something wants a signature.
+- **Per-host pinning.** A key can be refused — before any prompt — for every host but
+  the one it's bound to, so a stolen agent socket can't redirect it elsewhere.
+- **Opt-in, destination-scoped touch reuse**, a **tamper-evident audit log**, and a
+  **CLI-first guided `fob setup`** that onboards a host end to end.
+- **A tiny, zero-dependency codebase** you can read and audit in an afternoon.
+
 ## License
 
 Copyright (C) 2026 Olivier Devaux.
