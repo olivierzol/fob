@@ -18,7 +18,7 @@ private enum AgentMessage: UInt8 {
 /// flows through here so the menu-bar app can show a live feed.
 public struct AgentEvent {
     public enum Kind: String {
-        case listening, signed, signedReused, denied, refusedPin, refusedPolicy, unknownKey, bind, bindRejected
+        case listening, signed, signedReused, denied, refusedPin, refusedPolicy, refusedNamespace, unknownKey, bind, bindRejected
     }
     public let kind: Kind
     public let message: String
@@ -270,6 +270,13 @@ public final class Agent: @unchecked Sendable {
             return Data([AgentMessage.failure.rawValue])
         }
 
+        // A commit/file signature (`ssh-keygen -Y sign`, e.g. git commit signing) rather
+        // than an SSH login: the payload is an SSHSIG envelope. It has no host binding,
+        // so it's gated by the key's allowed namespaces, not by host pinning.
+        if let namespace = SSHSIG.namespace(of: dataToSign) {
+            return signSSHSIG(key: key, data: dataToSign, namespace: namespace, policy: policy, peer: peer)
+        }
+
         // Pinning: a pinned key signs only for its verified, bound host — refused
         // before any Touch ID prompt, so a blocked request never costs a touch.
         if !policy.pinnedHostKeys.isEmpty {
@@ -324,6 +331,57 @@ public final class Agent: @unchecked Sendable {
             audit.record("denied", key: key.name, destination: destination, peer: peer)
             announce(.denied, "🚫 Signature request from \(peer) for \(destination) with key '\(key.name)' was denied",
                      key: key.name, destination: destination, peer: peer)
+            return Data([AgentMessage.failure.rawValue])
+        }
+    }
+
+    /// Sign an SSHSIG payload (git commit / `ssh-keygen -Y sign`). Gated by the key's
+    /// allowed namespaces rather than host pinning, with a signing-specific prompt and
+    /// a reuse window scoped to the namespace (so a signing grant can't be spent on SSH
+    /// auth, nor across namespaces).
+    private func signSSHSIG(key: StoredKey, data: Data, namespace: String,
+                            policy: KeyPolicy, peer: String) -> Data {
+        let purpose = namespace == "git" ? "a git commit" : "a \(namespace) signature"
+        guard policy.allowsSignature(namespace: namespace) else {
+            log("REFUSED signing \(purpose) with key '\(key.name)' (\(peer)) — namespace '\(namespace)' not allowed")
+            audit.record("refused-namespace", key: key.name, destination: namespace, peer: peer)
+            announce(.refusedNamespace, "⛔️ Blocked: \(peer) tried to sign \(purpose) with key '\(key.name)' — namespace ‘\(namespace)’ isn't allowed",
+                     key: key.name, destination: namespace, peer: peer)
+            return Data([AgentMessage.failure.rawValue])
+        }
+
+        let reuseWindow = min(policy.reuseSeconds ?? 0, 300)
+        let reuseScope = Data("sshsig:\(namespace)".utf8) // reuse is per-namespace, separate from SSH auth
+
+        if reuseWindow > 0, let cached = cachedAuthorization(for: key.name, destination: reuseScope) {
+            if let signature = try? key.privateKey(context: cached).signature(for: data) {
+                log("signed \(purpose) with key '\(key.name)' (\(peer)) — reuse window")
+                audit.record("signed-\(namespace)", key: key.name, destination: purpose, peer: peer)
+                announce(.signedReused, "🔑 \(peer) signed \(purpose) with key '\(key.name)' (reuse window)",
+                         key: key.name, destination: purpose, peer: peer)
+                return signResponse(signature)
+            }
+            dropAuthorization(for: key.name)
+        }
+
+        let context = LAContext()
+        context.localizedReason = "sign \(purpose)\nwith key “\(key.name)” · requested by \(peer)"
+        log("sign request from \(peer) to sign \(purpose) with key '\(key.name)' — waiting for user approval")
+        do {
+            let signature = try key.privateKey(context: context).signature(for: data)
+            log("signed \(purpose) with key '\(key.name)' (\(peer))")
+            audit.record("signed-\(namespace)", key: key.name, destination: purpose, peer: peer)
+            announce(.signed, "🔑 \(peer) signed \(purpose) with key '\(key.name)'",
+                     key: key.name, destination: purpose, peer: peer)
+            if reuseWindow > 0 {
+                storeAuthorization(context, for: key.name, seconds: reuseWindow, destination: reuseScope)
+            }
+            return signResponse(signature)
+        } catch {
+            log("signing \(purpose) with key '\(key.name)' (\(peer)) failed: \(error.localizedDescription)")
+            audit.record("denied", key: key.name, destination: purpose, peer: peer)
+            announce(.denied, "🚫 Request from \(peer) to sign \(purpose) with key '\(key.name)' was denied",
+                     key: key.name, destination: purpose, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
     }

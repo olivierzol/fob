@@ -43,8 +43,20 @@ USAGE:
       (max 300) — for git/rsync bursts. Every reused signature is still
       pin-checked, notified, and audited.
 
+  fob sign-setup <name>
+      Print how to use a key for Touch ID-gated git commit signing (SSH signing):
+      the SSH_AUTH_SOCK export, the git config, and the public key to register on
+      your git host (GitHub, GitLab, Gitea/Forgejo, …) as a Signing Key. A key can
+      be both an Authentication and a Signing key. `git commit` then prompts Touch
+      ID and the host shows "Verified".
+
+  fob namespaces <name> <any|none|ns1,ns2,...>
+      Restrict which SSHSIG namespaces a key may sign (git commit signing uses
+      "git"). any = any namespace (default); none = signing disabled; a list =
+      only those. Does not affect SSH authentication (see `pin`).
+
   fob policy
-      Show the pinning and reuse policy of every key.
+      Show the pinning, reuse, and signing policy of every key.
 
   fob audit [--verify]
       Show recent agent decisions (sign/deny/refuse/bind) from the
@@ -164,6 +176,62 @@ do {
             print("Key '\(key.name)': one approval now counts for \(Int(seconds))s of signatures.")
         }
 
+    case "namespaces":
+        let rest = Array(arguments.dropFirst())
+        guard rest.count == 2 else { fail("usage: fob namespaces <name> <any|none|ns1,ns2,...>") }
+        let key = try store.find(name: rest[0])
+        var policy = store.policy(name: key.name)
+        switch rest[1].lowercased() {
+        case "any": policy.allowedNamespaces = nil
+        case "none": policy.allowedNamespaces = []
+        default:
+            let list = rest[1].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            guard !list.isEmpty else { fail("usage: fob namespaces <name> <any|none|ns1,ns2,...>") }
+            policy.allowedNamespaces = list
+        }
+        try store.savePolicy(policy, name: key.name)
+        if let namespaces = policy.allowedNamespaces {
+            print(namespaces.isEmpty
+                ? "Key '\(key.name)' will refuse ALL signature requests."
+                : "Key '\(key.name)' will sign only for: \(namespaces.joined(separator: ", ")).")
+        } else {
+            print("Key '\(key.name)' may sign for any namespace.")
+        }
+
+    case "sign-setup":
+        guard let name = arguments.dropFirst().first, arguments.count == 2 else {
+            fail("usage: fob sign-setup <name>")
+        }
+        let key = try store.find(name: name)
+        let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let pubURL = sshDir.appendingPathComponent("fob_\(name).pub")
+        let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)")
+        try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        print("Enable Touch ID-gated git commit signing with fob key '\(name)'.")
+        print("Public key exported to \(pubURL.path).")
+        print("")
+        print("1. Point ssh-keygen's signer at fob's agent (add to your shell profile):")
+        print("     export SSH_AUTH_SOCK=\(store.socketPath)")
+        print("")
+        print("2. Configure git to sign with this key:")
+        print("     git config --global gpg.format ssh")
+        print("     git config --global user.signingkey \(pubURL.path)")
+        print("     git config --global commit.gpgsign true")
+        print("     git config --global tag.gpgsign true")
+        print("")
+        print("3. Register the key on your git host as a SIGNING key (a separate entry from")
+        print("   an Authentication key) — e.g. GitHub or GitLab → Settings → SSH keys:")
+        print("     \(pubLine)")
+        print("")
+        print("4. (recommended) restrict this key to git signatures only:")
+        print("     fob namespaces \(name) git")
+        print("")
+        print("Then `git commit` prompts Touch ID via fob, and your host (GitHub, GitLab,")
+        print("Gitea/Forgejo, …) shows \"Verified\". It also verifies locally via allowed_signers.")
+
     case "policy":
         let keys = try store.all()
         if keys.isEmpty { print("No keys yet.") }
@@ -181,6 +249,10 @@ do {
                 parts.append("touch reuse \(Int(reuse))s")
             } else {
                 parts.append("touch every time")
+            }
+            if let namespaces = policy.allowedNamespaces {
+                parts.append(namespaces.isEmpty ? "signing disabled"
+                                                : "signs only: \(namespaces.joined(separator: ", "))")
             }
             print("\(key.name): \(parts.joined(separator: "; "))")
         }
