@@ -16,7 +16,7 @@ swift build -c release          # binary at .build/release/fob
 ./Scripts/build-app.sh
 ```
 
-The agent runs inside `fob.app`. `./Scripts/build-app.sh` builds and ad-hoc-signs the bundle, copies it to `~/Applications/fob.app`, and symlinks the CLI to `~/.fob/bin/fob`. Open the app and turn on **Launch at login**. (For notarized distribution, swap the ad-hoc identity in the script for a Developer ID and add `--options runtime`.)
+The agent runs inside `fob.app`. `./Scripts/build-app.sh` builds and ad-hoc-signs the bundle, copies it to `~/Applications/fob.app`, and symlinks the CLI to `~/.fob/bin/fob`. Open the app and turn on **Launch at login**. Set `FOB_SIGN_IDENTITY` to sign with a real identity (an ad-hoc build works locally but can't show a notification icon and can't be distributed). For a notarized, Homebrew-distributable build, see [`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## Usage
 
@@ -61,11 +61,56 @@ fob test-sign mykey
 
 Other commands: `list`, `pin`/`unpin`, `reuse`, `policy`, `audit`, `uninstall` (removes the legacy launchd agent). Most of these are also available from the menu-bar panel.
 
-## What this defends against — and what it doesn't
+## Security model
 
-Defends against: key file theft (no file exists), memory scraping of the agent (the enclave signs; the key never enters RAM), backup/sync leakage, and silent key use (a touch is required per signature).
+Be clear-eyed about what a hardware-backed agent can and cannot do. fob is a
+presence-gated key store, not a sandbox around your own logged-in session.
 
-Does **not** defend against: a compromised host piggybacking on a session you legitimately opened; and agent-forwarding hijack on a remote host (prefer `ProxyJump` over `ForwardAgent`).
+**Strongly protected:**
+
+- **Key theft / exfiltration.** The private key is generated in the Secure Enclave and
+  never leaves it. On disk there is only an enclave-wrapped blob that is useless on any
+  other machine and can't be turned back into key material — full disk access, a stolen
+  laptop, a Time Machine backup, or `sudo` yields nothing usable.
+- **Memory scraping.** The enclave performs the signature; the key never enters the
+  agent's (or any) process memory.
+- **Silent use.** Every *fresh* signature needs user presence (Touch ID / Apple Watch /
+  password), so nothing signs without a prompt — subject to the reuse window below.
+- **Wrong-destination use.** A pinned key signs only for its verified, bound host
+  (see [Per-host pinning](#per-host-pinning)).
+
+**Not protected against — by design, and worth understanding:**
+
+- **A malicious process running as you, while your Mac is unlocked.** This is inherent
+  to *every* ssh-agent: anything with your user ID can connect to the agent socket and
+  request a signature. The Touch ID prompt is the backstop for each fresh signature —
+  but a **touch-reuse window** (off by default; opt-in, max 300 s) lets signatures
+  happen with no prompt while it's open. Reuse is scoped to the destination it was
+  approved for, so a grant for host A can't be spent on host B; still, treat reuse as
+  "N seconds of touchless signing available to anything running as you." Such a process
+  can also read or rewrite everything under `~/.fob` (policies, the audit log). The
+  socket and `~/.fob` are `0600`/`0700`, so *other* users on the machine are kept out —
+  the boundary fob cannot cross is code running as **you**.
+- **A compromised host** piggybacking on a session you legitimately opened, and
+  **agent-forwarding hijack** on a remote host — prefer `ProxyJump` over `ForwardAgent`.
+- **You, the machine owner.** The audit log is tamper-*evident*, not tamper-*proof*
+  (see [Audit log](#audit-log)).
+
+Two honest nuances:
+
+- **`session-bind` proves participation, not intent for a specific signature.** The
+  binding proves a host holding that host key took part in *some* key exchange; fob does
+  not tie it to the exact payload being signed (neither does OpenSSH's own agent). A
+  local attacker could replay a captured binding for a pinned host to satisfy the pin
+  check — but the resulting signature is only useful against the real host within a live
+  session whose ID was mixed into the signed data. Pinning raises the bar substantially;
+  it is not absolute against a determined same-user attacker.
+- **Lock-screen previews.** Notifications name the destination and key; macOS may show
+  that on the lock screen depending on **System Settings → Notifications → fob → Show
+  previews**. Set it to "when unlocked" (or never) if which hosts you reach is sensitive.
+
+A full third-party-style audit of this codebase, with these items resolved and a
+regression test suite (`swift test`), is in [`SECURITY_CLAUDE_REPORT.md`](SECURITY_CLAUDE_REPORT.md).
 
 ## Destination awareness
 
@@ -89,7 +134,9 @@ Trade-off: a pinned key stops working with ssh clients older than OpenSSH 8.9 (t
 
 ## Audit log
 
-Every agent decision — `bind`, `signed`, `denied`, `refused-pin`, `unknown-key` — is appended to `~/.fob/audit.log` with timestamp, key, destination, and requesting process. Entries form a SHA-256 hash chain: each records the hash of the previous line, so editing or deleting history breaks the chain for everything after it. `fob audit` shows recent entries; `audit --verify` checks the chain. Honest limitation: the *newest* entry can be altered undetectably until another lands on top of it — chain-head attestation (e.g. an enclave-signed head) would be the phase-3 fix.
+Every agent decision — `bind`, `signed`, `signed-reused`, `denied`, `refused-pin`, `refused-policy`, `unknown-key` — is appended to `~/.fob/audit.log` with timestamp, key, destination, and requesting process. Entries form a SHA-256 hash chain: each records the hash of the previous line, so editing or deleting a line breaks the chain for everything after it. `fob audit` shows recent entries; `audit --verify` checks the chain.
+
+**Honest limitation — tamper-evident, not tamper-proof.** The log is a plain file you own, with no external anchor or secret key, so anyone who can write it (you, or malware running as you) can recompute a fresh, internally-consistent chain that `--verify` accepts, or simply delete the file. This *cannot* be fixed against a same-user attacker without hardware attestation: any key fob could use to seal the log without prompting is, by definition, also usable by that attacker, and a Touch-ID-gated seal would mean a prompt per log line. Treat `--verify` as detecting accidental or partial edits — not as proof against a motivated attacker who is already running as you.
 
 ## Menu-bar app
 
