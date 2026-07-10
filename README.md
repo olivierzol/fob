@@ -1,209 +1,172 @@
+<div align="center">
+
+<img src="docs/logo.png" alt="fob" width="112" height="112">
+
 # fob
 
-Your Mac as a key fob: SSH keys that live in the Secure Enclave, open only the doors they're badged for, and take one touch to use.
+**Your Mac as a key fob** — SSH keys that live in the Secure Enclave, open only the doors they're badged for, and take one touch to use.
 
-The private key is generated inside the Secure Enclave and never leaves it — there is no key file to steal, back up, or leak. What's stored on disk (`~/.fob/keys/`) is an encrypted blob only your machine's enclave can use. Every SSH authentication requires user presence (Touch ID, Apple Watch, or password — or strictly Touch ID with `--require-biometry`).
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+&nbsp;![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000?logo=apple)
+&nbsp;![Swift 5.9](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
+&nbsp;![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
 
-A `fob` CLI plus a menu-bar app (`fob.app`) that hosts the agent, zero third-party dependencies. Beyond basic Touch ID gating: destination-aware prompts (session-bind), per-host key pinning, opt-in touch reuse, a tamper-evident audit log, and native notifications with a live sign-request feed.
+</div>
 
-## Build
+The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, and a tamper-evident audit log — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
 
-```sh
-# CLI only:
-swift build -c release          # binary at .build/release/fob
+## Features
 
-# Menu-bar app (also builds and bundles the CLI), installed to ~/Applications:
-./Scripts/build-app.sh
-```
+- 🔐 **Keys in the Secure Enclave** — non-exportable; nothing usable on disk or in memory
+- 👆 **One touch per use** — Touch ID, Apple Watch, or password
+- 🎯 **Destination-aware prompts** — see *where* you're connecting, cryptographically verified
+- 📌 **Per-host pinning** — a key refuses every host but the one it's bound to
+- ⏱️ **Opt-in touch reuse** — one touch covers a `git` / `rsync` burst
+- 📜 **Tamper-evident audit log** — hash-chained record of every decision
+- 🖥️ **Menu-bar app + CLI** — live activity feed, guided setup, zero dependencies
 
-The agent runs inside `fob.app`. `./Scripts/build-app.sh` builds and ad-hoc-signs the bundle, copies it to `~/Applications/fob.app`, and symlinks the CLI to `~/.fob/bin/fob`. Open the app and turn on **Launch at login**. Set `FOB_SIGN_IDENTITY` to sign with a real identity (an ad-hoc build works locally but can't show a notification icon and can't be distributed). For a notarized, Homebrew-distributable build, see [`docs/RELEASING.md`](docs/RELEASING.md).
+## Install
 
-## Usage
-
-### Guided (recommended)
-
-One command sets up a remote host end to end — creates the key, installs it on
-the server with `ssh-copy-id` (you'll enter your password once), adds a `Host`
-entry to `~/.ssh/config`, and verifies the connection with Touch ID:
-
-```sh
-fob setup myserver oliv@192.168.1.10
-# or just `fob setup` and answer the prompts
-```
-
-After that, `ssh myserver` asks for Touch ID and connects.
-
-Prefer to run every command yourself? `--manual` only creates and exports the
-key, then prints the remaining steps (ssh-copy-id line, config block, test
-command) for you to inspect and paste — it executes nothing and never touches
-`~/.ssh/config`. Arguments are passed to subprocesses as an argv array (no
-shell involved), and names/hosts/users may not start with `-`, so they can
-never be smuggled in as ssh options.
-
-### Manual
+### Homebrew (recommended)
 
 ```sh
-# 1. Create a key (P-256 — the only curve the Secure Enclave supports)
-fob generate mykey
-
-# 2. Add the printed public key to the server's ~/.ssh/authorized_keys (or GitHub)
-
-# 3. Start the agent: open fob.app and turn on "Launch at login"
-#    (build it first with ./Scripts/build-app.sh)
-
-# 4. Point ssh at the agent — add to ~/.ssh/config:
-#    Host *
-#      IdentityAgent ~/.fob/agent.sock
-
-# 5. Verify the Touch ID flow without a server:
-fob test-sign mykey
+brew install --cask olivierzol/fob/fob
 ```
 
-Other commands: `list`, `pin`/`unpin`, `reuse`, `policy`, `audit`, `uninstall` (removes the legacy launchd agent). Most of these are also available from the menu-bar panel.
+Then open **fob** from the menu bar and turn on **Launch at login**.
 
-## Security model
+### From source
 
-Be clear-eyed about what a hardware-backed agent can and cannot do. fob is a
-presence-gated key store, not a sandbox around your own logged-in session.
+```sh
+./Scripts/build-app.sh      # builds fob.app → ~/Applications and symlinks the CLI
+```
 
-**Strongly protected:**
+Ad-hoc-signed by default (fine for local use). Set `FOB_SIGN_IDENTITY` for a real signature; see [`docs/RELEASING.md`](docs/RELEASING.md) for notarized / Homebrew builds. CLI only: `swift build -c release`.
 
-- **Key theft / exfiltration.** The private key is generated in the Secure Enclave and
-  never leaves it. On disk there is only an enclave-wrapped blob that is useless on any
-  other machine and can't be turned back into key material — full disk access, a stolen
-  laptop, a Time Machine backup, or `sudo` yields nothing usable.
-- **Memory scraping.** The enclave performs the signature; the key never enters the
-  agent's (or any) process memory.
-- **Silent use.** Every *fresh* signature needs user presence (Touch ID / Apple Watch /
-  password), so nothing signs without a prompt — subject to the reuse window below.
-- **Wrong-destination use.** A pinned key signs only for its verified, bound host
-  (see [Per-host pinning](#per-host-pinning)).
+## Quick start
 
-**Not protected against — by design, and worth understanding:**
+One command onboards a host end to end — creates the key, installs it with `ssh-copy-id`, adds a `~/.ssh/config` entry, verifies with Touch ID, and pins the key:
 
-- **A malicious process running as you, while your Mac is unlocked.** This is inherent
-  to *every* ssh-agent: anything with your user ID can connect to the agent socket and
-  request a signature. The Touch ID prompt is the backstop for each fresh signature —
-  but a **touch-reuse window** (off by default; opt-in, max 300 s) lets signatures
-  happen with no prompt while it's open. Reuse is scoped to the destination it was
-  approved for, so a grant for host A can't be spent on host B; still, treat reuse as
-  "N seconds of touchless signing available to anything running as you." Such a process
-  can also read or rewrite everything under `~/.fob` (policies, the audit log). The
-  socket and `~/.fob` are `0600`/`0700`, so *other* users on the machine are kept out —
-  the boundary fob cannot cross is code running as **you**.
-- **A compromised host** piggybacking on a session you legitimately opened, and
-  **agent-forwarding hijack** on a remote host — prefer `ProxyJump` over `ForwardAgent`.
-- **You, the machine owner.** The audit log is tamper-*evident*, not tamper-*proof*
-  (see [Audit log](#audit-log)).
+```sh
+fob setup myserver you@host      # or just `fob setup` and answer the prompts
+```
 
-Two honest nuances:
+Then `ssh myserver` prompts for Touch ID and connects. Prefer to run each step yourself? `fob setup --manual` prints the commands and changes nothing.
 
-- **`session-bind` proves participation, not intent for a specific signature.** The
-  binding proves a host holding that host key took part in *some* key exchange; fob does
-  not tie it to the exact payload being signed (neither does OpenSSH's own agent). A
-  local attacker could replay a captured binding for a pinned host to satisfy the pin
-  check — but the resulting signature is only useful against the real host within a live
-  session whose ID was mixed into the signed data. Pinning raises the bar substantially;
-  it is not absolute against a determined same-user attacker.
-- **Lock-screen previews.** Notifications name the destination and key; macOS may show
-  that on the lock screen depending on **System Settings → Notifications → fob → Show
-  previews**. Set it to "when unlocked" (or never) if which hosts you reach is sensitive.
+<details>
+<summary><strong>Manual setup</strong> (without the <code>setup</code> helper)</summary>
 
-**Where keys are stored.** fob keeps each key as its Secure Enclave `dataRepresentation`
-— an enclave-wrapped, **device-bound blob** — in a `0600` file under `~/.fob/keys/` (the
-[age-plugin-se](https://github.com/Foxboron/age-plugin-se) pattern), rather than in the
-macOS Keychain. This does **not** weaken the core protection: the private key never
-leaves the Secure Enclave in either model, the blob is useless on any other device, and
-every use is gated by the key's own Touch ID / presence access control no matter where
-the blob sits — reading the file cannot produce a signature without the prompt. The one
-difference from Keychain storage is that a process running as *you* can read the blob
-file; but it still can't sign without Touch ID, and same-user code can already reach the
-agent socket regardless (this sits in the "malicious code running as you" zone above).
-At-rest encryption is FileVault's job; `0700`/`0600` keep other users out. (Moving the
-blob into a code-identity-gated Keychain item is possible but low-value, since the blob
-isn't extractable — see [`docs/CONFIG-INTEGRITY.md`](docs/CONFIG-INTEGRITY.md) for why
-that mechanism is dormant.)
+```sh
+fob generate mykey                    # 1. create a Secure Enclave key (P-256)
+# 2. add the printed public key to the server's authorized_keys (or GitHub)
+# 3. open fob.app and enable "Launch at login"
+# 4. point ssh at the agent — in ~/.ssh/config:
+#      Host *
+#        IdentityAgent ~/.fob/agent.sock
+fob test-sign mykey                   # 5. verify the Touch ID flow, no server needed
+```
 
-A full third-party-style audit of this codebase, with these items resolved and a
-regression test suite (`swift test`), is in [`SECURITY_CLAUDE_REPORT.md`](SECURITY_CLAUDE_REPORT.md).
+</details>
 
-## Destination awareness
+## How it works
 
-The Touch ID prompt tells you **where** you're connecting, not just that something wants a signature:
+### 🎯 Destination-aware prompts
+
+The Touch ID prompt tells you **where** you're connecting, not just that *something* wants a signature:
 
 > connect to **marvin (192.168.1.20)** — requested by ssh (pid 1234) with key "marvin"
 
-This closes the classic ssh-agent **intent gap** (Touch ID proving *you are present* but not *which connection* you're approving). Modern ssh clients (OpenSSH 8.9+) send the agent a `session-bind@openssh.com` message carrying the destination's host key, the session ID, and the host key's signature over it. The agent **verifies that signature** (Ed25519, ECDSA, and RSA host keys), so a local process cannot claim a destination it didn't really do a key exchange with. The host key is resolved to a name you recognize via `known_hosts` and your ssh config aliases.
+Modern ssh clients (OpenSSH 8.9+) send a `session-bind@openssh.com` message carrying the server's host key and a signature over the session ID. fob **verifies that signature** (Ed25519 / ECDSA / RSA) and resolves the host to a name from `known_hosts` and your ssh config — so a local process can't claim a destination it didn't actually connect to. A client that omits the binding shows as **"an UNKNOWN destination"**, so silence is visible too.
 
-If a client omits the binding, the prompt says so — "connect to **an UNKNOWN destination**" — so silence is visible too. To refuse rather than just label, pin the key (next section).
+### 📌 Per-host pinning
 
-## Per-host pinning
+`fob pin <key> <host>` (done automatically by `setup`) refuses a key — **before any Touch ID prompt** — for any other destination, unverified bindings, or clients that don't identify a host. A stolen agent socket therefore can't redirect a pinned key elsewhere. `unpin` reverses it; `policy` lists every key.
 
-`setup` pins each key to its host automatically (opt out with `--no-pin`); do it by hand with `fob pin <key> <host>` (host keys are read from `~/.ssh/known_hosts`). A pinned key is refused — before any Touch ID prompt — for any other destination, for unverified bindings, and for clients that don't identify a destination at all. A stolen agent socket therefore can't use your pinned key against a different server even if you'd approve the touch. `unpin` reverses it; `policy` shows the state of every key.
+> **Trade-off:** pinned keys require OpenSSH ≥ 8.9 (older clients never send the binding).
 
-Trade-off: a pinned key stops working with ssh clients older than OpenSSH 8.9 (they never send the binding).
+### ⏱️ Touch reuse
 
-## Touch reuse
+`fob reuse <key> 30` lets one approval cover the next 30 s (max 300) — enough for a `git pull`'s many connections or an rsync burst. Reused signatures are still pin-checked, notified, and audited (`signed-reused`). `fob reuse <key> off` restores touch-per-signature.
 
-`fob reuse <key> 30` lets one approval count for the next 30 seconds (max 300) for that key — one touch covers a `git pull`'s multiple connections or an rsync burst. The agent holds the authorization in memory and drops it at the deadline (or when the agent exits); reused signatures still go through pin checks and still produce notifications and audit entries (`signed-reused`). `reuse <key> off` restores touch-per-signature.
+### 📜 Audit log
 
-## Audit log
+Every decision (`signed`, `denied`, `refused-pin`, …) is appended to `~/.fob/audit.log` as a SHA-256 **hash chain** — editing or deleting any line breaks it. `fob audit` shows recent entries; `fob audit --verify` checks the chain. (Tamper-*evident*, not tamper-*proof* — see [Security model](#security-model).)
 
-Every agent decision — `bind`, `signed`, `signed-reused`, `denied`, `refused-pin`, `refused-policy`, `unknown-key` — is appended to `~/.fob/audit.log` with timestamp, key, destination, and requesting process. Entries form a SHA-256 hash chain: each records the hash of the previous line, so editing or deleting a line breaks the chain for everything after it. `fob audit` shows recent entries; `audit --verify` checks the chain.
+### 🖥️ Menu-bar app
 
-**Honest limitation — tamper-evident, not tamper-proof.** The log is a plain file you own, with no external anchor or secret key, so anyone who can write it (you, or malware running as you) can recompute a fresh, internally-consistent chain that `--verify` accepts, or simply delete the file. This *cannot* be fixed against a same-user attacker without hardware attestation: any key fob could use to seal the log without prompting is, by definition, also usable by that attacker, and a Touch-ID-gated seal would mean a prompt per log line. Treat `--verify` as detecting accidental or partial edits — not as proof against a motivated attacker who is already running as you.
+`fob.app` (no Dock icon) hosts the agent in-process. Its panel shows status and a **live activity feed**, manages keys (generate / reuse / pin / delete), toggles Launch-at-login, and reveals the audit log. Only one agent runs at a time (an exclusive lock on `~/.fob/agent.lock`); the CLI and app share `~/.fob`, so `fob pin` / `reuse` / `generate` from the terminal take effect immediately.
 
-## Menu-bar app
+### 🔔 Notifications
 
-`fob.app` is a menu-bar-only app (no Dock icon) that hosts the agent in-process. From its panel you can:
+A native notification on every event, so key use is never silent:
 
-- see agent status and a **live feed** of every decision (signed / denied / refused / bind) as it happens,
-- manage keys — generate, set the touch-reuse window, pin to a host / unpin, delete,
-- toggle **Launch at login** (via `SMAppService`), and reveal the audit log.
+| | |
+|---|---|
+| 🔑 | a signature was issued — with the requesting process and destination |
+| 🚫 | a request was denied (Touch ID cancelled or failed) |
+| ⛔️ | a pinned key was blocked for the wrong destination |
+| ⚠️ | something asked for a key this agent doesn't hold |
 
-Because the app owns the socket, only one agent runs at a time: startup takes an exclusive lock on `~/.fob/agent.lock`, and the CLI `fob agent` command is disabled (it points you to the app). The CLI and app share the same `~/.fob` files, so `fob pin`/`reuse`/`generate` from the terminal take effect on the running app at the next signature.
+Process attribution is best-effort (via the socket peer's PID) — treat it as awareness, not proof.
 
-Migrating from the phase-1/2 launchd agent: run `fob uninstall` to remove `dev.fob.agent`, then open `fob.app` and enable Launch at login.
+## Security model
 
-## Notifications
+fob is a **presence-gated key store, not a sandbox around your own logged-in session.**
 
-The agent posts a macOS notification for every signature event, so key usage is never silent:
+**✅ Strongly protected**
 
-- 🔑 a signature was issued — including which process asked (e.g. `ssh (pid 1234)`) and for which destination (from the session binding)
-- 🚫 a signature request was denied (Touch ID canceled or failed)
-- ⛔️ a pinned key was blocked for the wrong destination
-- ⚠️ something requested a signature with a key this agent doesn't hold
+- **Key theft** — the private key never leaves the enclave; the on-disk blob is device-bound and useless elsewhere (disk access, backups, `sudo` get nothing usable).
+- **Memory scraping** — the enclave performs the signature; the key never enters process memory.
+- **Silent use** — every *fresh* signature requires user presence.
+- **Wrong destination** — a pinned key signs only for its verified, bound host.
 
-The requesting process is identified from the socket peer's PID. This is best-effort and spoofable in principle (PID reuse) — treat it as awareness, never proof. The app posts **native** notifications via `UNUserNotificationCenter` (allow notifications for "fob" if you don't see them); if that's unavailable — unsigned build or denied permission — it falls back automatically to the `osascript` notifier (which appears under "Script Editor").
+**⚠️ Not protected against (by design)**
 
-## Notes
+- **Code running as *you*, while your Mac is unlocked** — inherent to any ssh-agent: it can drive the agent socket (each sign still hits Touch ID, unless a reuse window is open) and read/rewrite `~/.fob`. Other *users* are kept out (`0700`/`0600`); the line fob can't cross is your own uid.
+- **A compromised remote host** / agent-forwarding hijack — prefer `ProxyJump` over `ForwardAgent`.
+- **You, the owner** — the audit log is tamper-evident, not tamper-proof.
 
-- Key type is `ecdsa-sha2-nistp256` only. No ed25519/RSA, no import/export — by design.
-- `--require-biometry` binds the key to the currently enrolled fingerprints; enrolling a new fingerprint invalidates it. The default (`userPresence`) also allows Apple Watch and password, which covers clamshell mode.
-- Deleting a `.key` file permanently destroys that key (nothing can recreate it).
+<details>
+<summary><strong>Deeper nuances</strong> — session-bind replay, lock-screen previews, and file-vs-Keychain storage</summary>
+
+- **`session-bind` proves participation, not intent for a specific signature.** The binding proves a host holding that host key took part in *some* key exchange; fob does not tie it to the exact payload being signed (neither does OpenSSH's own agent). A local attacker could replay a captured binding for a pinned host to satisfy the pin check — but the resulting signature is only useful against the real host within a live session whose ID was mixed into the signed data. Pinning raises the bar substantially; it is not absolute against a determined same-user attacker.
+- **Lock-screen previews.** Notifications name the destination and key; macOS may show that on the lock screen depending on **System Settings → Notifications → fob → Show previews**. Set it to "when unlocked" (or never) if which hosts you reach is sensitive.
+- **Where keys are stored.** fob keeps each key as its Secure Enclave `dataRepresentation` — an enclave-wrapped, **device-bound blob** — in a `0600` file under `~/.fob/keys/` (the [age-plugin-se](https://github.com/Foxboron/age-plugin-se) pattern), rather than in the macOS Keychain. This does **not** weaken the core protection: the private key never leaves the enclave in either model, the blob is useless on any other device, and every use is gated by the key's own presence access control no matter where the blob sits — reading the file cannot produce a signature without the prompt. The one difference from Keychain storage is that a process running as *you* can read the blob file; but it still can't sign without Touch ID, and same-user code can already reach the agent socket regardless. At-rest encryption is FileVault's job; `0700`/`0600` keep other users out. (Moving the blob into a code-identity-gated Keychain item is possible but low-value, since the blob isn't extractable — see [`docs/CONFIG-INTEGRITY.md`](docs/CONFIG-INTEGRITY.md).)
+
+</details>
+
+A full third-party-style audit of this codebase (findings resolved) plus a regression test suite (`swift test`) is in [`SECURITY_CLAUDE_REPORT.md`](SECURITY_CLAUDE_REPORT.md).
+
+## CLI reference
+
+| Command | Description |
+|---|---|
+| `fob setup [alias] [user@host]` | Guided end-to-end host onboarding |
+| `fob generate <name> [--require-biometry]` | Create a Secure Enclave key |
+| `fob list` | Print public keys (authorized_keys format) |
+| `fob pin <key> <host>` · `fob unpin <key>` | Restrict a key to a host / remove all pins |
+| `fob reuse <key> <seconds\|off>` | Set the touch-reuse window (max 300 s) |
+| `fob policy` | Show every key's pin + reuse state |
+| `fob audit [--verify]` | Show recent decisions / verify the hash chain |
+| `fob test-sign <key>` | Exercise the Touch ID flow, no server needed |
+
+Most actions are also available from the menu-bar panel.
+
+> **Notes:** keys are `ecdsa-sha2-nistp256` (the enclave's only curve); no import/export by design. `--require-biometry` binds a key to the currently enrolled fingerprints (re-enrolling invalidates it); the default also accepts Apple Watch / password. Deleting a key is permanent — nothing can recreate it.
 
 ## Acknowledgments
 
-We first came across the idea of keeping SSH keys in the Secure Enclave through
-[Secretive](https://github.com/maxgoedjen/secretive) by Max Goedjen (see its
-[README](https://github.com/maxgoedjen/secretive/blob/main/README.md)). We liked the
-concept — a menu-bar agent that never lets the key leave the enclave — and it's worth a
-look if fob isn't what you're after.
+We first came across the idea of keeping SSH keys in the Secure Enclave through [Secretive](https://github.com/maxgoedjen/secretive) by Max Goedjen (see its [README](https://github.com/maxgoedjen/secretive/blob/main/README.md)). We liked the concept — a menu-bar agent that never lets the key leave the enclave — and it's worth a look if fob isn't what you're after.
 
-We built fob rather than adopting it because we wanted to center a few different ideas:
+We built fob rather than adopting it to center a few different ideas:
 
-- **Destination-aware authorization.** fob verifies the `session-bind@openssh.com`
-  host-key signature and puts the *destination* in the Touch ID prompt ("connect to
-  marvin (192.168.1.20)"), so you approve *where* you're connecting — not just *that*
-  something wants a signature.
-- **Per-host pinning.** A key can be refused — before any prompt — for every host but
-  the one it's bound to, so a stolen agent socket can't redirect it elsewhere.
-- **Opt-in, destination-scoped touch reuse**, a **tamper-evident audit log**, and a
-  **CLI-first guided `fob setup`** that onboards a host end to end.
+- **Destination-aware authorization** — the verified destination in the Touch ID prompt, not just *that* something wants a signature.
+- **Per-host pinning** — a key refused, before any prompt, for every host but the one it's bound to.
+- **Opt-in touch reuse**, a **tamper-evident audit log**, and a **CLI-first guided `fob setup`**.
 - **A tiny, zero-dependency codebase** you can read and audit in an afternoon.
 
 ## License
 
-Copyright (C) 2026 Olivier Devaux.
+Copyright © 2026 Olivier Devaux.
 
-fob is free software licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0) — see [`LICENSE`](LICENSE). You may use, study, modify, and redistribute it, but any distributed or network-served derivative must also be released as open source under the same license.
+fob is free software under the **GNU Affero General Public License v3.0** ([AGPL-3.0](LICENSE)) — use, study, modify, and redistribute it freely, but any distributed or network-served derivative must also be open-sourced under the same license.
