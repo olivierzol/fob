@@ -276,6 +276,16 @@ code comments already state. Do not build any policy on it (fob doesn't — good
   `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and `.userPresence` /
   `.biometryCurrentSet` (`KeyStore.swift:62-77`). `.biometryCurrentSet` invalidates keys
   if fingerprints are re-enrolled — a strong choice.
+- **Storage model (file vs Keychain).** Keys are persisted as the Secure Enclave
+  `dataRepresentation` in `0600` files under `~/.fob/keys/` (age-plugin-se pattern), not
+  in the Keychain. This does not weaken key protection: the private key never leaves the
+  enclave either way, the blob is device-bound and useless elsewhere, and every use is
+  gated by the key's own presence access control regardless of where the blob is stored —
+  possessing the file cannot yield a signature without Touch ID. The only delta vs a
+  code-identity-gated Keychain item is that same-UID code can read the blob file, which
+  sits in the already-out-of-scope same-user threat zone (such code can also drive the
+  agent socket directly). At-rest encryption is delegated to FileVault; `0700`/`0600`
+  enforce other-user isolation.
 - **SSH signature verification is correct** across ed25519 / ECDSA P-256/384/521 / RSA
   (`SessionBind.swift:74-157`): right curves, hash-included verification variants, and
   DER assembly for RSA. Type confusion between key/sig blobs isn't exploitable because

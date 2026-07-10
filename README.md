@@ -109,6 +109,21 @@ Two honest nuances:
   that on the lock screen depending on **System Settings → Notifications → fob → Show
   previews**. Set it to "when unlocked" (or never) if which hosts you reach is sensitive.
 
+**Where keys are stored.** fob keeps each key as its Secure Enclave `dataRepresentation`
+— an enclave-wrapped, **device-bound blob** — in a `0600` file under `~/.fob/keys/` (the
+[age-plugin-se](https://github.com/Foxboron/age-plugin-se) pattern), rather than in the
+macOS Keychain. This does **not** weaken the core protection: the private key never
+leaves the Secure Enclave in either model, the blob is useless on any other device, and
+every use is gated by the key's own Touch ID / presence access control no matter where
+the blob sits — reading the file cannot produce a signature without the prompt. The one
+difference from Keychain storage is that a process running as *you* can read the blob
+file; but it still can't sign without Touch ID, and same-user code can already reach the
+agent socket regardless (this sits in the "malicious code running as you" zone above).
+At-rest encryption is FileVault's job; `0700`/`0600` keep other users out. (Moving the
+blob into a code-identity-gated Keychain item is possible but low-value, since the blob
+isn't extractable — see [`docs/CONFIG-INTEGRITY.md`](docs/CONFIG-INTEGRITY.md) for why
+that mechanism is dormant.)
+
 A full third-party-style audit of this codebase, with these items resolved and a
 regression test suite (`swift test`), is in [`SECURITY_CLAUDE_REPORT.md`](SECURITY_CLAUDE_REPORT.md).
 
