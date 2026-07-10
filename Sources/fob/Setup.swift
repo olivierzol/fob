@@ -4,6 +4,86 @@ import Foundation
 /// Guided end-to-end setup for one remote host: create (or reuse) an enclave key,
 /// export its public key, install it on the server, wire up ~/.ssh/config, verify.
 enum Setup {
+    /// `fob adopt <alias>` — convert an existing `~/.ssh/config` host to fob. Prints a
+    /// dry-run plan (generates the enclave key locally, but changes nothing on the
+    /// server or in ~/.ssh/config); the key install leans on your existing key auth,
+    /// so it's passwordless for hosts you can already reach.
+    static func adopt(store: KeyStore, arguments: [String]) throws {
+        var rest = arguments
+        let requireBiometry = rest.contains("--require-biometry")
+        rest.removeAll { $0 == "--require-biometry" }
+        guard rest.count == 1, let alias = rest.first, KeyStore.isValidName(alias) else {
+            throw AdoptError.usage
+        }
+
+        let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+        let configText = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
+        guard let parsed = HostSetup.parseHostBlock(alias: alias, in: configText) else {
+            throw AdoptError.notConfigured(alias)
+        }
+        let host = parsed.hostName ?? alias
+        let user = parsed.user ?? NSUserName()
+        let port = parsed.port ?? 22
+
+        if parsed.usesFobAgent {
+            print("`\(alias)` already routes through fob (its IdentityAgent is ~/.fob/agent.sock).")
+            print("Nothing to adopt. Manage its key with: fob pin/reuse/policy \(alias)")
+            return
+        }
+
+        // Generate/reuse the enclave key and export the public key (safe, local-only).
+        let key: StoredKey
+        if let existing = try? store.find(name: alias) {
+            key = existing
+            print("Reusing existing fob key '\(alias)'.")
+        } else {
+            key = try store.create(name: alias, requireBiometry: requireBiometry)
+            print("Created Secure Enclave key '\(alias)' (\(requireBiometry ? "Touch ID only" : "Touch ID, Apple Watch, or password")).")
+        }
+        let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
+        let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
+        try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+
+        let portArg = port == 22 ? "" : " -p \(port)"
+        let old = parsed.identityFiles.first(where: { !$0.contains("/fob_") })
+        let isGitProvider = ["github.com", "gitlab.com", "bitbucket.org", "ssh.github.com"].contains(host.lowercased())
+
+        print("")
+        print("Adopting `\(alias)` (\(user)@\(host)\(port == 22 ? "" : ":\(port)")) into fob.")
+        print("Public key exported to \(pubURL.path).")
+        print("")
+        print("Dry run — nothing on the server or in ~/.ssh/config was changed. To convert,")
+        print("run these steps (they use your EXISTING key, so no password is needed):")
+        print("")
+        if isGitProvider {
+            print("1. Add the fob public key to your \(host) account (Settings → SSH keys):")
+            print("")
+            print("     \(pubLine)")
+        } else {
+            print("1. Install the fob key on the server (authenticates with your current key):")
+            print("")
+            print("     ssh-copy-id -f -i \(pubURL.path)\(portArg) \(alias)")
+        }
+        print("")
+        print("2. Point `Host \(alias)` in ~/.ssh/config at fob — ensure these lines are in")
+        print("   the block\(old.map { ", and comment out the old `IdentityFile \($0)`" } ?? ""):")
+        print("")
+        print("     IdentityAgent \(store.socketPath)")
+        print("     IdentityFile \(pubURL.path)")
+        print("     IdentitiesOnly yes")
+        print("")
+        print("3. Test (Touch ID will prompt):")
+        print("")
+        print("     ssh \(alias) true")
+        print("")
+        print("4. Pin the key so it only works for this host:")
+        print("")
+        print("     fob pin \(alias) \(host)")
+        print("")
+        print("5. Once it works, remove the old key from \(isGitProvider ? "your \(host) account" : "the server's ~/.ssh/authorized_keys").")
+    }
+
     static func run(store: KeyStore, arguments: [String]) throws {
         var rest = arguments
         let requireBiometry = rest.contains("--require-biometry")
@@ -292,6 +372,20 @@ enum SetupError: LocalizedError {
             return "could not install the public key on the server"
         case .verifyFailed(let destination):
             return "test connection to \(destination) failed — check the server's authorized_keys and sshd config"
+        }
+    }
+}
+
+enum AdoptError: LocalizedError {
+    case usage
+    case notConfigured(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .usage:
+            return "usage: fob adopt <alias> [--require-biometry]"
+        case .notConfigured(let alias):
+            return "no `Host \(alias)` entry in ~/.ssh/config — for a brand-new host use: fob setup \(alias)"
         }
     }
 }

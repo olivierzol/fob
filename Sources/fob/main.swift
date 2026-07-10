@@ -20,6 +20,12 @@ USAGE:
       commands for you to inspect and run yourself — nothing is executed
       and ~/.ssh/config is not touched.
 
+  fob adopt <alias> [--require-biometry]
+      Convert an existing ~/.ssh/config host to fob. Prints a dry-run plan
+      (generates the enclave key locally but changes nothing on the server or
+      in ~/.ssh/config); the install step reuses your current key, so it's
+      passwordless for hosts you can already reach.
+
   fob list
       Print the public keys in authorized_keys format.
 
@@ -100,6 +106,9 @@ do {
 
     case "setup":
         try Setup.run(store: store, arguments: Array(arguments.dropFirst()))
+
+    case "adopt":
+        try Setup.adopt(store: store, arguments: Array(arguments.dropFirst()))
 
     case "list":
         let keys = try store.all()
