@@ -106,6 +106,27 @@ final class AppState: ObservableObject {
         run { store in try store.remove(name: name) }
     }
 
+    /// Confirm-then-delete via an AppKit alert. A SwiftUI `confirmationDialog` fired
+    /// from a `Menu` inside the `MenuBarExtra` panel never appears — presenting it
+    /// makes the panel resign key and dismiss, canceling the dialog with it. An
+    /// `NSAlert` runs its own modal that doesn't depend on the panel staying open.
+    func requestDelete(name: String) {
+        // Defer so the menu finishes dismissing before the modal opens.
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "Delete key “\(name)”?"
+            alert.informativeText =
+                "The Secure Enclave key is erased permanently and cannot be recovered."
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertFirstButtonReturn {
+                self.delete(name: name)
+            }
+        }
+    }
+
     func unpin(name: String) {
         run { store in
             var policy = store.policy(name: name)

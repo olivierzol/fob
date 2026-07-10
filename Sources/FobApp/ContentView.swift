@@ -9,7 +9,6 @@ struct ContentView: View {
     @State private var newKeyBiometry = false
     @State private var pinTarget: String?      // key name awaiting a host to pin to
     @State private var pinHost = ""
-    @State private var deleteTarget: String?   // key name awaiting delete confirmation
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -28,17 +27,6 @@ struct ContentView: View {
         .sheet(item: Binding(get: { pinTarget.map(Identified.init) },
                              set: { pinTarget = $0?.value })) { item in
             pinSheet(keyName: item.value)
-        }
-        .confirmationDialog("Delete key?", isPresented: Binding(
-            get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
-            if let name = deleteTarget {
-                Button("Delete '\(name)'", role: .destructive) {
-                    state.delete(name: name); deleteTarget = nil
-                }
-            }
-            Button("Cancel", role: .cancel) { deleteTarget = nil }
-        } message: {
-            Text("The Secure Enclave key is erased permanently and cannot be recovered.")
         }
     }
 
@@ -100,7 +88,7 @@ struct ContentView: View {
                 }
                 Button("Pin to host…") { pinHost = ""; pinTarget = key.name }
                 Divider()
-                Button("Delete…", role: .destructive) { deleteTarget = key.name }
+                Button("Delete…", role: .destructive) { state.requestDelete(name: key.name) }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
