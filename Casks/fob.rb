@@ -25,6 +25,10 @@ cask "fob" do
   # Expose the bundled CLI on PATH as `fob`.
   binary "#{appdir}/fob.app/Contents/MacOS/fob-cli", target: "fob"
 
+  # Quit the running menu-bar app before replacing the bundle (on upgrade/uninstall),
+  # so the old version isn't left running on top of the new files. Reopen fob after.
+  uninstall quit: "dev.fob.app"
+
   # `brew uninstall --zap` removes user state too.
   zap trash: [
     "~/.fob",
