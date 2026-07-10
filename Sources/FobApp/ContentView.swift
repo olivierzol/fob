@@ -193,7 +193,7 @@ struct ContentView: View {
         switch kind {
         case .signed, .signedReused: return "checkmark.seal.fill"
         case .denied: return "xmark.seal.fill"
-        case .refusedPin: return "hand.raised.fill"
+        case .refusedPin, .refusedPolicy: return "hand.raised.fill"
         case .unknownKey: return "questionmark.circle.fill"
         case .bind: return "link"
         case .bindRejected: return "exclamationmark.triangle.fill"
@@ -205,7 +205,7 @@ struct ContentView: View {
         switch kind {
         case .signed, .signedReused: return .green
         case .denied: return .orange
-        case .refusedPin, .bindRejected: return .red
+        case .refusedPin, .refusedPolicy, .bindRejected: return .red
         case .unknownKey: return .yellow
         case .bind, .listening: return .secondary
         }

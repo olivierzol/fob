@@ -21,17 +21,36 @@ public struct KeyPolicy: Codable {
     }
 }
 
+/// Result of loading a key's policy file, so the agent can tell "no policy, open by
+/// design" apart from "policy present but unreadable" and fail closed on the latter.
+public enum PolicyStatus {
+    case absent               // no file → default (open) policy, as intended
+    case present(KeyPolicy)   // parsed cleanly
+    case unreadable           // file exists but couldn't be read/decoded → fail closed
+}
+
 extension KeyStore {
     private func policyURL(name: String) -> URL {
         keysDirectory.appendingPathComponent("\(name).policy")
     }
 
-    /// Never throws: an unreadable/corrupt policy degrades to the default (open) policy.
-    public func policy(name: String) -> KeyPolicy {
-        guard let data = try? Data(contentsOf: policyURL(name: name)),
+    /// Distinguishes absent (open by design) from present-but-corrupt (must fail
+    /// closed): a security control silently vanishing on file corruption is a
+    /// fail-open bug, so the agent refuses to sign when a policy is `.unreadable`.
+    public func policyStatus(name: String) -> PolicyStatus {
+        let url = policyURL(name: name)
+        guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
+        guard let data = try? Data(contentsOf: url),
               let policy = try? JSONDecoder().decode(KeyPolicy.self, from: data)
-        else { return KeyPolicy() }
-        return policy
+        else { return .unreadable }
+        return .present(policy)
+    }
+
+    /// Convenience for display contexts (CLI/UI): an unreadable policy shows as the
+    /// default. Signing decisions MUST use `policyStatus` so corruption fails closed.
+    public func policy(name: String) -> KeyPolicy {
+        if case .present(let policy) = policyStatus(name: name) { return policy }
+        return KeyPolicy()
     }
 
     public func savePolicy(_ policy: KeyPolicy, name: String) throws {

@@ -8,5 +8,6 @@ let package = Package(
         .target(name: "FobKit", path: "Sources/FobKit"),
         .executableTarget(name: "fob", dependencies: ["FobKit"], path: "Sources/fob"),
         .executableTarget(name: "FobApp", dependencies: ["FobKit"], path: "Sources/FobApp"),
+        .testTarget(name: "FobKitTests", dependencies: ["FobKit"], path: "Tests/FobKitTests"),
     ]
 )

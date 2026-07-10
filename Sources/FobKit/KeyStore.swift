@@ -39,19 +39,30 @@ public struct KeyStore {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        // createDirectory only applies permissions when it creates the directory, so a
+        // pre-existing ~/.fob (from an older build, a restore, or a bad umask) could be
+        // world-readable. Re-assert 0700 on every startup — these hold key blobs,
+        // policies, and the audit log.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: keysDir.path)
         return KeyStore(directory: dir)
     }
 
     public var keysDirectory: URL { directory.appendingPathComponent("keys") }
     public var socketPath: String { directory.appendingPathComponent("agent.sock").path }
 
+    /// Valid key/alias name: letters, digits, '.', '_', '-', and never a leading '-'.
+    /// These names become CLI arguments (`ssh <alias>`, `-i <file>`) and filenames, so
+    /// they must never be parseable as an option nor contain path/shell metacharacters.
+    public static func isValidName(_ name: String) -> Bool {
+        name.range(of: "^[A-Za-z0-9._][A-Za-z0-9._-]*$", options: .regularExpression) != nil
+    }
+
     public func create(name: String, requireBiometry: Bool) throws -> StoredKey {
         guard SecureEnclave.isAvailable else {
             throw KeyStoreError.secureEnclaveUnavailable
         }
-        // No leading '-': these names end up as CLI arguments (ssh <alias>, -i <file>)
-        // and must never be parseable as an option.
-        guard name.range(of: "^[A-Za-z0-9._][A-Za-z0-9._-]*$", options: .regularExpression) != nil else {
+        guard Self.isValidName(name) else {
             throw KeyStoreError.invalidName(name)
         }
         let keyURL = keysDirectory.appendingPathComponent("\(name).key")

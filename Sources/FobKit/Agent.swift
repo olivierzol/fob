@@ -18,7 +18,7 @@ private enum AgentMessage: UInt8 {
 /// flows through here so the menu-bar app can show a live feed.
 public struct AgentEvent {
     public enum Kind: String {
-        case listening, signed, signedReused, denied, refusedPin, unknownKey, bind, bindRejected
+        case listening, signed, signedReused, denied, refusedPin, refusedPolicy, unknownKey, bind, bindRejected
     }
     public let kind: Kind
     public let message: String
@@ -46,6 +46,13 @@ public final class Agent: @unchecked Sendable {
     private let audit: AuditLog
     private let lock: AgentLock
     private static let maxMessageSize: UInt32 = 1 << 20
+    /// Cap on concurrent client connections. Each ssh session holds one open for its
+    /// lifetime, so this is generous for real use while capping a local process that
+    /// tries to exhaust threads/FDs. Excess connections are refused, not queued, so
+    /// existing sessions are never wedged.
+    private static let maxConnections = 256
+    private var activeConnections = 0
+    private let connectionsLock = NSLock()
 
     /// Called for every decision/lifecycle event, on an arbitrary thread. A UI that
     /// sets this must hop to the main thread itself. nil by default (headless).
@@ -59,7 +66,7 @@ public final class Agent: @unchecked Sendable {
     /// kept (per key) and reused until its deadline. This is the only way to skip
     /// re-prompting — touchIDAuthenticationAllowableReuseDuration measures from
     /// device unlock, not from the previous approval, so it does not help here.
-    private var authorizations: [String: (context: LAContext, deadline: Date)] = [:]
+    private var authorizations: [String: (context: LAContext, deadline: Date, destination: Data?)] = [:]
     private let authorizationsLock = NSLock()
 
     public init(store: KeyStore) {
@@ -76,7 +83,11 @@ public final class Agent: @unchecked Sendable {
         onEvent?(AgentEvent(kind: kind, message: message, key: key, destination: destination, peer: peer))
     }
 
-    private func cachedAuthorization(for keyName: String) -> LAContext? {
+    /// Reuse a cached authorization only for the exact destination it was approved
+    /// for. Otherwise a touch approved while bound to host A could be silently spent
+    /// on host B by another local process during the window. `nil == nil` matches the
+    /// unbound case (pre-8.9 clients that don't send session-bind).
+    private func cachedAuthorization(for keyName: String, destination: Data?) -> LAContext? {
         authorizationsLock.lock()
         defer { authorizationsLock.unlock() }
         guard let entry = authorizations[keyName] else { return nil }
@@ -85,13 +96,15 @@ public final class Agent: @unchecked Sendable {
             authorizations[keyName] = nil
             return nil
         }
+        guard entry.destination == destination else { return nil }
         return entry.context
     }
 
-    private func storeAuthorization(_ context: LAContext, for keyName: String, seconds: Double) {
+    private func storeAuthorization(_ context: LAContext, for keyName: String,
+                                    seconds: Double, destination: Data?) {
         authorizationsLock.lock()
         defer { authorizationsLock.unlock() }
-        authorizations[keyName] = (context, Date().addingTimeInterval(seconds))
+        authorizations[keyName] = (context, Date().addingTimeInterval(seconds), destination)
     }
 
     private func dropAuthorization(for keyName: String) {
@@ -119,13 +132,18 @@ public final class Agent: @unchecked Sendable {
             dst.copyBytes(from: pathBytes)
         }
 
+        // Tighten umask so the socket is created 0600 from the start: without this the
+        // socket briefly exists at 0666 & ~umask between bind() and chmod(). (~/.fob is
+        // 0700 so no other user could reach it anyway — this closes the window too.)
+        let previousMask = umask(0o177)
         let bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
+        umask(previousMask)
         guard bindResult == 0 else { throw AgentError.bind(errno) }
-        chmod(socketPath, 0o600)
+        chmod(socketPath, 0o600) // belt-and-suspenders
         guard listen(fd, 16) == 0 else { throw AgentError.listen(errno) }
 
         log("listening on \(socketPath)")
@@ -133,9 +151,22 @@ public final class Agent: @unchecked Sendable {
         while true {
             let client = accept(fd, nil, nil)
             guard client >= 0 else { continue }
+            connectionsLock.lock()
+            let atCapacity = activeConnections >= Self.maxConnections
+            if !atCapacity { activeConnections += 1 }
+            connectionsLock.unlock()
+            guard !atCapacity else {
+                log("refusing connection: \(Self.maxConnections) already active")
+                close(client) // shed load rather than exhaust threads/FDs
+                continue
+            }
             Thread.detachNewThread { [weak self] in
                 self?.serve(client: client)
                 close(client)
+                guard let self else { return }
+                self.connectionsLock.lock()
+                self.activeConnections -= 1
+                self.connectionsLock.unlock()
             }
         }
     }
@@ -225,9 +256,22 @@ public final class Agent: @unchecked Sendable {
             return Data([AgentMessage.failure.rawValue])
         }
 
+        // Fail closed: a policy file that exists but can't be read/decoded must never
+        // silently degrade to the open default and drop a pin. Refuse until it's fixed.
+        let policy: KeyPolicy
+        switch store.policyStatus(name: key.name) {
+        case .present(let loaded): policy = loaded
+        case .absent: policy = KeyPolicy()
+        case .unreadable:
+            log("REFUSED key '\(key.name)' for \(destination) (\(peer)) — policy file is unreadable")
+            audit.record("refused-policy", key: key.name, destination: destination, peer: peer)
+            announce(.refusedPolicy, "⛔️ Blocked: key '\(key.name)' has an unreadable policy file — refusing until fixed",
+                     key: key.name, destination: destination, peer: peer)
+            return Data([AgentMessage.failure.rawValue])
+        }
+
         // Pinning: a pinned key signs only for its verified, bound host — refused
         // before any Touch ID prompt, so a blocked request never costs a touch.
-        let policy = store.policy(name: key.name)
         if !policy.pinnedHostKeys.isEmpty {
             guard let bound = bindings.last, bound.verified,
                   policy.pinnedHostKeys.contains(bound.hostKeyBlob) else {
@@ -240,9 +284,12 @@ public final class Agent: @unchecked Sendable {
         }
 
         let reuseWindow = min(policy.reuseSeconds ?? 0, 300)
+        // The destination a reuse grant is bound to: the verified host key of this
+        // connection (nil when unbound). Reuse is only honored for the same value.
+        let reuseDestination = bindings.last?.hostKeyBlob
 
         // Within the reuse window: sign with the previously authorized context, no prompt.
-        if reuseWindow > 0, let cached = cachedAuthorization(for: key.name) {
+        if reuseWindow > 0, let cached = cachedAuthorization(for: key.name, destination: reuseDestination) {
             if let signature = try? key.privateKey(context: cached).signature(for: dataToSign) {
                 log("signed with key '\(key.name)' for \(destination) (\(peer)) — reuse window")
                 audit.record("signed-reused", key: key.name, destination: destination, peer: peer)
@@ -263,7 +310,7 @@ public final class Agent: @unchecked Sendable {
             announce(.signed, "🔑 \(peer) signed in to \(destination) with key '\(key.name)'",
                      key: key.name, destination: destination, peer: peer)
             if reuseWindow > 0 {
-                storeAuthorization(context, for: key.name, seconds: reuseWindow)
+                storeAuthorization(context, for: key.name, seconds: reuseWindow, destination: reuseDestination)
             }
             return signResponse(signature)
         } catch {

@@ -18,7 +18,7 @@ enum Setup {
 
         // 1. Gather alias / host / user, prompting for whatever wasn't given.
         let alias = try rest.first ?? prompt("Alias for this host (used as key name and `ssh <alias>`)")
-        guard alias.range(of: "^[A-Za-z0-9._][A-Za-z0-9._-]*$", options: .regularExpression) != nil else {
+        guard KeyStore.isValidName(alias) else {
             throw KeyStoreError.invalidName(alias)
         }
         var user = NSUserName()
@@ -130,7 +130,7 @@ enum Setup {
             throw SetupError.copyFailed
         }
         print("Installing the key on \(destination) — you may be asked for your password.")
-        let copyStatus = runInteractive("ssh-copy-id", ["-f", "-i", pubURL.path, destination])
+        let copyStatus = runInteractive("/usr/bin/ssh-copy-id", ["-f", "-i", pubURL.path, destination])
         guard copyStatus == 0 else {
             print("")
             print("ssh-copy-id failed. You can retry manually with:")
@@ -175,7 +175,7 @@ enum Setup {
                "-o", "IdentityAgent=\(store.socketPath)",
                "-o", "IdentitiesOnly=yes",
                "-i", pubURL.path, destination, "true"]
-        if runInteractive("ssh", sshArgs) == 0 {
+        if runInteractive("/usr/bin/ssh", sshArgs) == 0 {
             print("")
             print("✅ \(destination) accepted the Secure Enclave key. You're all set\(aliasConfigured ? ": ssh \(alias)" : ".")")
         } else {
@@ -226,15 +226,18 @@ enum Setup {
     /// Spawn a subprocess that stays in OUR process group. Foundation's Process puts
     /// children in a new group, so when ssh reads the password from /dev/tty the
     /// terminal suspends it (SIGTTIN) and the prompt never appears.
-    private static func runInteractive(_ command: String, _ arguments: [String]) -> Int32 {
+    ///
+    /// `executable` is an ABSOLUTE path, run directly — no `/usr/bin/env` / PATH lookup,
+    /// so a hijacked PATH can't substitute a malicious `ssh`.
+    private static func runInteractive(_ executable: String, _ arguments: [String]) -> Int32 {
         fflush(stdout) // keep our output ordered ahead of the subprocess's
-        var argv: [UnsafeMutablePointer<CChar>?] = (["/usr/bin/env", command] + arguments)
+        var argv: [UnsafeMutablePointer<CChar>?] = ([executable] + arguments)
             .map { strdup($0) }
         argv.append(nil)
         defer { argv.forEach { free($0) } }
 
         var pid: pid_t = 0
-        guard posix_spawn(&pid, "/usr/bin/env", nil, nil, &argv, environ) == 0 else {
+        guard posix_spawn(&pid, executable, nil, nil, &argv, environ) == 0 else {
             return -1
         }
         var status: Int32 = 0
