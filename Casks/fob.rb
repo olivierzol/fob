@@ -12,7 +12,7 @@
 # work on every user's machine.
 cask "fob" do
   version "0.3.0"
-  sha256 "REPLACE_WITH_RELEASE_ZIP_SHA256"
+  sha256 "4e22f32d4069f02482961a7b94319caf5141d8f9e2f7c09c069997090f1a2902"
 
   url "https://github.com/OWNER/fob/releases/download/v#{version}/fob-#{version}.zip",
       verified: "github.com/OWNER/fob/"

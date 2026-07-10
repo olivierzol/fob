@@ -29,3 +29,6 @@ audit.head.sig
 *.p12
 .env
 .env.*
+
+# Release artifacts (produced by Scripts/release.sh)
+fob-*.zip
