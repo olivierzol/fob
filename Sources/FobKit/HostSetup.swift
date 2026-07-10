@@ -30,4 +30,49 @@ public enum HostSetup {
     public static func isValidHostToken(_ s: String) -> Bool {
         !s.isEmpty && !s.contains(" ") && !s.hasPrefix("-")
     }
+
+    /// What we read out of an existing `~/.ssh/config` Host block, for `fob adopt`.
+    public struct ParsedHost: Equatable {
+        public var hostName: String?
+        public var user: String?
+        public var port: Int?
+        public var identityFiles: [String]
+        public var usesFobAgent: Bool // IdentityAgent already points at ~/.fob/agent.sock
+    }
+
+    /// Reads the `Host <alias>` block from ssh-config text, if the alias appears as a
+    /// literal pattern (never via a wildcard/`Match` block — we won't touch those).
+    /// Returns nil when there's no such block.
+    public static func parseHostBlock(alias: String, in config: String) -> ParsedHost? {
+        var inBlock = false, found = false
+        var host = ParsedHost(hostName: nil, user: nil, port: nil, identityFiles: [], usesFobAgent: false)
+        for raw in config.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            let lower = line.lowercased()
+            if lower == "host" || lower.hasPrefix("host ") || lower == "match" || lower.hasPrefix("match ") {
+                if inBlock { break } // reached the next section — our block ended
+                if lower.hasPrefix("host ") {
+                    let patterns = line.dropFirst(5).split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+                    if patterns.contains(alias) { inBlock = true; found = true }
+                }
+                continue
+            }
+            guard inBlock else { continue }
+            // key / value separated by whitespace or '='
+            guard let sep = line.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" }) else { continue }
+            let key = line[..<sep].lowercased()
+            let value = line[line.index(after: sep)...]
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \t=\""))
+            switch key {
+            case "hostname": host.hostName = value
+            case "user": host.user = value
+            case "port": host.port = Int(value)
+            case "identityfile": host.identityFiles.append(value)
+            case "identityagent": if value.contains("/.fob/") { host.usesFobAgent = true }
+            default: break
+            }
+        }
+        return found ? host : nil
+    }
 }

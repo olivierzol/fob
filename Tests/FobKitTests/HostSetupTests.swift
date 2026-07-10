@@ -48,6 +48,43 @@ final class HostSetupTests: XCTestCase {
         XCTAssertEqual(blobs("192.168.1.9", 22).count, 1)
     }
 
+    func testParseHostBlock() {
+        let cfg = """
+        Host web
+          HostName example.com
+          User deploy
+          Port 2222
+          IdentityFile ~/.ssh/id_ed25519
+
+        Host other
+          HostName x.example
+        """
+        let p = HostSetup.parseHostBlock(alias: "web", in: cfg)
+        XCTAssertEqual(p?.hostName, "example.com")
+        XCTAssertEqual(p?.user, "deploy")
+        XCTAssertEqual(p?.port, 2222)
+        XCTAssertEqual(p?.identityFiles, ["~/.ssh/id_ed25519"])
+        XCTAssertEqual(p?.usesFobAgent, false)
+        XCTAssertNil(HostSetup.parseHostBlock(alias: "missing", in: cfg), "unknown alias → nil")
+        // Block ends at the next Host — don't leak `other`'s HostName into `web`.
+        XCTAssertNotEqual(p?.hostName, "x.example")
+    }
+
+    func testParseHostBlockIgnoresWildcardAndDetectsFob() {
+        let cfg = """
+        Host *
+          IdentityAgent ~/.fob/agent.sock
+        Host prod
+          HostName p.example
+          IdentityAgent ~/.fob/agent.sock
+        """
+        // 'foo' is only covered by the wildcard block → not an adoptable literal host.
+        XCTAssertNil(HostSetup.parseHostBlock(alias: "foo", in: cfg))
+        let p = HostSetup.parseHostBlock(alias: "prod", in: cfg)
+        XCTAssertEqual(p?.hostName, "p.example")
+        XCTAssertEqual(p?.usesFobAgent, true)
+    }
+
     func testValidHostToken() {
         XCTAssertTrue(HostSetup.isValidHostToken("example.com"))
         XCTAssertTrue(HostSetup.isValidHostToken("10.0.0.1"))
