@@ -88,6 +88,36 @@ else
     [[ "${FOB_SIGN_TIMESTAMP:-1}" == "0" ]] && ts="--timestamp=none"
     codesign --force --options runtime "$ts" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/fob-cli"
     codesign --force --options runtime "$ts" --sign "$SIGN_IDENTITY" "$APP"
+
+    # Optional: re-sign with a keychain-access-group entitlement so policies can live in
+    # the code-identity-gated keychain (see Sources/FobKit/PolicyStore.swift). OFF by
+    # default and EXPERIMENTAL: `keychain-access-groups` is only authorized for a signing
+    # identity that has a matching provisioning profile / App Store or App Groups
+    # entitlement. With a bare Apple Development or Developer ID cert, macOS treats the
+    # entitlement as unauthorized and KILLS the app on launch (SIGKILL). Without the
+    # entitlement the keychain probe simply fails and the policy store falls back to
+    # files — safe, just not code-identity gated. Enable only once you have the profile
+    # wired up, and verify the app still launches.
+    if [[ "${FOB_KEYCHAIN_ENTITLEMENT:-0}" == "1" ]]; then
+        TEAM="$(codesign -dvv "$APP" 2>&1 | awk -F= '/^TeamIdentifier=/{print $2}')"
+        if [[ -n "$TEAM" && "$TEAM" != "not set" ]]; then
+            echo "    [experimental] adding keychain-access-group entitlement ($TEAM.dev.fob.app)"
+            ENT="$(mktemp)"
+            cat > "$ENT" <<ENTITLEMENTS
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>keychain-access-groups</key>
+    <array><string>$TEAM.dev.fob.app</string></array>
+</dict>
+</plist>
+ENTITLEMENTS
+            codesign --force --options runtime "$ts" --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/fob-cli"
+            codesign --force --options runtime "$ts" --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
+            rm -f "$ENT"
+        fi
+    fi
 fi
 codesign --verify --strict --verbose=2 "$APP" && echo "    signature OK"
 

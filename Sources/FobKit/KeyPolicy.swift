@@ -30,20 +30,17 @@ public enum PolicyStatus {
 }
 
 extension KeyStore {
-    private func policyURL(name: String) -> URL {
-        keysDirectory.appendingPathComponent("\(name).policy")
-    }
-
-    /// Distinguishes absent (open by design) from present-but-corrupt (must fail
-    /// closed): a security control silently vanishing on file corruption is a
-    /// fail-open bug, so the agent refuses to sign when a policy is `.unreadable`.
+    /// Distinguishes absent (open by design) from present-but-corrupt/unreadable (must
+    /// fail closed): a security control silently vanishing on corruption is a fail-open
+    /// bug, so the agent refuses to sign when a policy is `.unreadable`. Delegates to
+    /// the active `PolicyStore` (keychain when available, files otherwise).
     public func policyStatus(name: String) -> PolicyStatus {
-        let url = policyURL(name: name)
-        guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
-        guard let data = try? Data(contentsOf: url),
-              let policy = try? JSONDecoder().decode(KeyPolicy.self, from: data)
-        else { return .unreadable }
-        return .present(policy)
+        do {
+            if let policy = try policyStore.load(name: name) { return .present(policy) }
+            return .absent
+        } catch {
+            return .unreadable
+        }
     }
 
     /// Convenience for display contexts (CLI/UI): an unreadable policy shows as the
@@ -54,15 +51,12 @@ extension KeyStore {
     }
 
     public func savePolicy(_ policy: KeyPolicy, name: String) throws {
-        let url = policyURL(name: name)
+        // A default (open) policy is represented by the absence of a record.
         if policy.isDefault {
-            try? FileManager.default.removeItem(at: url)
-            return
+            try policyStore.remove(name: name)
+        } else {
+            try policyStore.save(policy, name: name)
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        try (try encoder.encode(policy)).write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
 

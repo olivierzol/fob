@@ -24,6 +24,15 @@ public struct StoredKey {
 
 public struct KeyStore {
     public let directory: URL
+    /// Where signing policies live. Injectable for tests; `default()` picks the
+    /// code-identity-gated keychain when the signed build allows it, else files.
+    let policyStore: PolicyStore
+
+    public init(directory: URL, policyStore: PolicyStore? = nil) {
+        self.directory = directory
+        self.policyStore = policyStore
+            ?? FilePolicyStore(keysDirectory: directory.appendingPathComponent("keys"))
+    }
 
     public static func `default`() throws -> KeyStore {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -45,7 +54,39 @@ public struct KeyStore {
         // policies, and the audit log.
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
         try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: keysDir.path)
-        return KeyStore(directory: dir)
+        return KeyStore(directory: dir, policyStore: selectPolicyStore(keysDirectory: keysDir))
+    }
+
+    /// Prefer the keychain (code-identity gated) when the signed build supports it,
+    /// migrating any existing file policies into it first. If the keychain is
+    /// unavailable — or a file policy can't be migrated (so we'd risk dropping a pin) —
+    /// stay on the file store. Always yields a working store.
+    private static func selectPolicyStore(keysDirectory: URL) -> PolicyStore {
+        let file = FilePolicyStore(keysDirectory: keysDirectory)
+        guard KeychainPolicyStore.isAvailable() else {
+            diagnostic("policy store: files (keychain unavailable — dev/unsigned build)")
+            return file
+        }
+        let keychain = KeychainPolicyStore()
+        guard keychain.migrate(from: file, keys: keyNames(in: keysDirectory)) else {
+            diagnostic("policy store: files (keychain migration incomplete)")
+            return file
+        }
+        diagnostic("policy store: keychain (code-identity gated)")
+        return keychain
+    }
+
+    /// Key names present on disk (basename of each `<name>.key`), used to migrate their
+    /// policies. Reads only filenames, never the enclave blobs.
+    private static func keyNames(in keysDirectory: URL) -> [String] {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: keysDirectory, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "key" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+    }
+
+    private static func diagnostic(_ message: String) {
+        FileHandle.standardError.write(Data("[fob] \(message)\n".utf8))
     }
 
     public var keysDirectory: URL { directory.appendingPathComponent("keys") }
@@ -129,6 +170,7 @@ public struct KeyStore {
                 try FileManager.default.removeItem(at: url)
             }
         }
+        try? policyStore.remove(name: name) // also clear a keychain-backed policy
     }
 }
 
