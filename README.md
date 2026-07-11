@@ -123,13 +123,15 @@ key on your host (they're separate entries).
 fob sign-setup <key>     # prints the exact steps below for a key you've generated
 ```
 
-It walks you through three things:
+It walks you through two things:
 
-1. **Point the signer at fob.** `git`/`ssh-keygen` find the agent via `SSH_AUTH_SOCK`
-   (not ssh-config's `IdentityAgent`), so add to your shell profile:
-   `export SSH_AUTH_SOCK=~/.fob/agent.sock`
-2. **Configure git:** `gpg.format ssh`, `user.signingkey <the fob pubkey>`, `commit.gpgsign true`.
-3. **Register the public key on your git host as a *signing* key** — e.g. GitHub or
+1. **Configure git** (`gpg.format ssh`, `user.signingkey <the fob pubkey>`,
+   `gpg.ssh.program <fob wrapper>`, `commit.gpgsign true`). fob points git's signer at
+   its agent through a tiny `gpg.ssh.program` wrapper (`~/.fob/bin/fob-sign`) rather than
+   `SSH_AUTH_SOCK` — so **only git signing** reaches fob, and any other ssh agent you run
+   (plus `git push` auth) is left untouched. Use `--global` for every repo, or `--local`
+   (run inside a repo) if you switch between multiple git identities.
+2. **Register the public key on your git host as a *signing* key** — e.g. GitHub or
    GitLab → Settings → SSH keys, added as a Signing Key (separate from an Authentication key).
 
 fob tells a signing request apart from an SSH login by the SSHSIG envelope's **namespace**

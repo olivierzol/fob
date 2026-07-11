@@ -92,6 +92,37 @@ public struct KeyStore {
     public var keysDirectory: URL { directory.appendingPathComponent("keys") }
     public var socketPath: String { directory.appendingPathComponent("agent.sock").path }
 
+    /// Path to the git-signing wrapper (`~/.fob/bin/fob-sign`). Set as git's
+    /// `gpg.ssh.program` so *only* commit signing reaches fob's agent — SSH_AUTH_SOCK
+    /// stays untouched, so other ssh agents and `git push` auth are unaffected.
+    public var signWrapperPath: String {
+        directory.appendingPathComponent("bin/fob-sign").path
+    }
+
+    /// Create (or refresh) the git-signing wrapper and return its path. The wrapper
+    /// sets SSH_AUTH_SOCK to fob's socket only for the `ssh-keygen -Y sign` invocation
+    /// that git runs, leaving the user's global agent selection alone.
+    @discardableResult
+    public func ensureSignWrapper() throws -> String {
+        let bin = directory.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(
+            at: bin, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        let wrapper = bin.appendingPathComponent("fob-sign")
+        let script = """
+        #!/bin/sh
+        # fob: route only git's SSH signing to fob's agent, without touching SSH_AUTH_SOCK
+        # (so your other ssh agents and `git push` auth are unaffected). Set as git's
+        # gpg.ssh.program. Managed by fob — regenerated on setup.
+        exec env SSH_AUTH_SOCK="\(socketPath)" /usr/bin/ssh-keygen "$@"
+
+        """
+        try script.data(using: .utf8)!.write(to: wrapper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+        return wrapper.path
+    }
+
     /// Valid key/alias name: letters, digits, '.', '_', '-', and never a leading '-'.
     /// These names become CLI arguments (`ssh <alias>`, `-i <file>`) and filenames, so
     /// they must never be parseable as an option nor contain path/shell metacharacters.
