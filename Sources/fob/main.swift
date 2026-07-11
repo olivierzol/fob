@@ -45,10 +45,10 @@ USAGE:
 
   fob sign-setup <name>
       Print how to use a key for Touch ID-gated git commit signing (SSH signing):
-      the SSH_AUTH_SOCK export, the git config, and the public key to register on
-      your git host (GitHub, GitLab, Gitea/Forgejo, …) as a Signing Key. A key can
-      be both an Authentication and a Signing key. `git commit` then prompts Touch
-      ID and the host shows "Verified".
+      the git config (routed to fob via a gpg.ssh.program wrapper, so SSH_AUTH_SOCK
+      is untouched) and the public key to register on your git host (GitHub, GitLab,
+      Gitea/Forgejo, …) as a Signing Key. A key can be both an Authentication and a
+      Signing key. `git commit` then prompts Touch ID and the host shows "Verified".
 
   fob namespaces <name> <any|none|ns1,ns2,...>
       Restrict which SSHSIG namespaces a key may sign (git commit signing uses
@@ -210,23 +210,26 @@ do {
         let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)")
         try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        let signer = try store.ensureSignWrapper()
         print("Enable Touch ID-gated git commit signing with fob key '\(name)'.")
         print("Public key exported to \(pubURL.path).")
         print("")
-        print("1. Point ssh-keygen's signer at fob's agent (add to your shell profile):")
-        print("     export SSH_AUTH_SOCK=\(store.socketPath)")
-        print("")
-        print("2. Configure git to sign with this key:")
+        print("1. Configure git to sign with this key. Use --global for every repo, or")
+        print("   --local (run inside a repo) if you juggle multiple git identities:")
         print("     git config --global gpg.format ssh")
         print("     git config --global user.signingkey \(pubURL.path)")
+        print("     git config --global gpg.ssh.program \(signer)")
         print("     git config --global commit.gpgsign true")
         print("     git config --global tag.gpgsign true")
         print("")
-        print("3. Register the key on your git host as a SIGNING key (a separate entry from")
+        print("   The gpg.ssh.program wrapper routes ONLY git signing to fob's agent, so")
+        print("   SSH_AUTH_SOCK is untouched — other ssh agents and `git push` still work.")
+        print("")
+        print("2. Register the key on your git host as a SIGNING key (a separate entry from")
         print("   an Authentication key) — e.g. GitHub or GitLab → Settings → SSH keys:")
         print("     \(pubLine)")
         print("")
-        print("4. (recommended) restrict this key to git signatures only:")
+        print("3. (recommended) restrict this key to git signatures only:")
         print("     fob namespaces \(name) git")
         print("")
         print("Then `git commit` prompts Touch ID via fob, and your host (GitHub, GitLab,")

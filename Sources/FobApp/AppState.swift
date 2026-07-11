@@ -27,6 +27,8 @@ final class AppState: ObservableObject {
     @Published private(set) var fatalError: String?
     /// Transient error from the most recent key action, shown then cleared.
     @Published var actionError: String?
+    /// The key the "Commit signing" window is set up for (set before opening it).
+    @Published var signingSetupKey: String?
 
     private let store: KeyStore?
     private var agent: Agent?
@@ -221,6 +223,80 @@ final class AppState: ObservableObject {
         } catch {
             return error.localizedDescription
         }
+    }
+
+    // MARK: - Commit signing (the "Commit signing" window)
+
+    struct SigningInfo {
+        let name: String
+        let pubLine: String            // add to the git host as a Signing Key
+        let pubPath: String
+        let signerProgram: String      // ~/.fob/bin/fob-sign (git's gpg.ssh.program)
+        let gitOnly: Bool              // policy currently restricts signing to "git"
+
+        /// The git config commands for a scope ("--global" or "--local"). The view
+        /// builds these so it can switch scope without re-reading the key. Uses a
+        /// `gpg.ssh.program` wrapper so only git signing reaches fob — SSH_AUTH_SOCK
+        /// (and any other ssh agent the user runs) is left completely alone.
+        func gitConfigCommands(global: Bool) -> [String] {
+            let scope = global ? "--global" : "--local"
+            return [
+                "git config \(scope) gpg.format ssh",
+                "git config \(scope) user.signingkey \(pubPath)",
+                "git config \(scope) gpg.ssh.program \(signerProgram)",
+                "git config \(scope) commit.gpgsign true",
+                "git config \(scope) tag.gpgsign true",
+            ]
+        }
+    }
+
+    /// Exports the key's public key and gathers everything the signing window shows.
+    /// Returns nil if the key or store is unavailable.
+    func signingInfo(for name: String) -> SigningInfo? {
+        guard let store, let key = try? store.find(name: name) else { return nil }
+        let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+        try? FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        let pubURL = sshDir.appendingPathComponent("fob_\(name).pub")
+        guard let pubLine = try? SSHFormat.authorizedKeysLine(key.publicKey(), comment: "fob:\(name)") else {
+            return nil
+        }
+        try? Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        let signer = (try? store.ensureSignWrapper()) ?? store.signWrapperPath
+        return SigningInfo(
+            name: name, pubLine: pubLine, pubPath: pubURL.path,
+            signerProgram: signer,
+            gitOnly: store.policy(name: name).allowedNamespaces == ["git"])
+    }
+
+    /// Restrict a key to git-commit signatures only (["git"]), or clear the restriction.
+    func setGitSigningOnly(_ on: Bool, name: String) {
+        run { store in
+            var policy = store.policy(name: name)
+            policy.allowedNamespaces = on ? ["git"] : nil
+            try store.savePolicy(policy, name: name)
+        }
+    }
+
+    /// Run the `git config --global` signing setup for the user. nil = success.
+    func configureGitSigning(pubPath: String, signerProgram: String) -> String? {
+        for args in [["config", "--global", "gpg.format", "ssh"],
+                     ["config", "--global", "user.signingkey", pubPath],
+                     ["config", "--global", "gpg.ssh.program", signerProgram],
+                     ["config", "--global", "commit.gpgsign", "true"],
+                     ["config", "--global", "tag.gpgsign", "true"]] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = args
+            do {
+                try process.run(); process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return "`git \(args.joined(separator: " "))` failed" }
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        return nil
     }
 
     func unpin(name: String) {

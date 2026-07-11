@@ -337,6 +337,11 @@ struct ContentView: View {
                 menuItem("Unpin (any destination)", color: t.text) { state.unpin(name: key.name) }
             }
             menuItem("Pin to host…", color: t.text) { state.requestPin(name: key.name) }
+            menuItem("Use for commit signing…", color: t.text) {
+                state.signingSetupKey = key.name
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: SigningSetupView.windowID)
+            }
             menuItem("Delete…", color: Theme.red) { state.requestDelete(name: key.name) }
         }
         .padding(6)

@@ -17,6 +17,11 @@ struct FobApp: App {
             HostSetupView().environmentObject(state)
         }
         .windowResizability(.contentSize)
+
+        Window("Commit signing", id: SigningSetupView.windowID) {
+            SigningSetupView().environmentObject(state)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
