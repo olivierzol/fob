@@ -23,6 +23,7 @@ The private key is generated **inside the Secure Enclave and never leaves it** �
 - 📌 **Per-host pinning** — a key refuses every host but the one it's bound to
 - ⏱️ **Opt-in touch reuse** — one touch covers a `git` / `rsync` burst
 - ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
+- 🚚 **Safe migration** — moves an existing SSH host to fob *alongside* the old key; no cutover, no lockout
 - 📜 **Tamper-evident audit log** — hash-chained record of every decision
 - 🖥️ **Menu-bar app + CLI** — live activity feed, guided setup, zero dependencies
 
@@ -68,6 +69,27 @@ fob test-sign mykey                   # 5. verify the Touch ID flow, no server n
 ```
 
 </details>
+
+## Already using SSH keys? Migrate
+
+fob **can't import** an existing key — the Secure Enclave only generates keys on-device (P-256). That's the safety feature, not a limitation: migration means fob adds a **new key alongside your old one**, proves it works, and lets you retire the old one *when you choose*. Your current key keeps working the whole time — **no cutover, no lockout**.
+
+For a host already in your `~/.ssh/config`, one command does it — it installs the fob key using your **current** key (so it's passwordless for hosts you can already reach), backs up and rewrites the config block (showing a diff first), verifies over Touch ID, and pins:
+
+```sh
+fob adopt myserver               # preview only: fob adopt myserver --dry-run
+```
+
+The old `IdentityFile` stays active as a fallback. Once you've confirmed fob works:
+
+```sh
+fob adopt myserver --retire      # comment the old key out of ~/.ssh/config
+# then remove the old public key from the server's ~/.ssh/authorized_keys
+```
+
+**From the menu-bar app:** open the panel → **Migrate a server…**. It lists the hosts in your `~/.ssh/config` and walks each one through install → config diff → **Verify (Touch ID)** → pin → optional retire, with a timestamped `~/.ssh/config` backup at every write.
+
+> Git hosts (GitHub/GitLab) don't take an `ssh-copy-id` install — `adopt` prints the public key to add under **Settings → SSH keys** instead, then wires up the config. To move commit *signing* to fob, use a key's ••• → **Use for commit signing…** (see below).
 
 ## How it works
 
@@ -179,8 +201,10 @@ A full third-party-style audit of this codebase (findings resolved) plus a regre
 | Command | Description |
 |---|---|
 | `fob setup [alias] [user@host]` | Guided end-to-end host onboarding |
+| `fob adopt <alias> [--dry-run] [--retire]` | Migrate an existing `~/.ssh/config` host to fob |
 | `fob generate <name> [--require-biometry]` | Create a Secure Enclave key |
 | `fob list` | Print public keys (authorized_keys format) |
+| `fob delete <key> [--force]` | Permanently erase a key from the enclave |
 | `fob pin <key> <host>` · `fob unpin <key>` | Restrict a key to a host / remove all pins |
 | `fob reuse <key> <seconds\|off>` | Set the touch-reuse window (max 300 s) |
 | `fob policy` | Show every key's pin + reuse state |

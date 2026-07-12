@@ -133,16 +133,34 @@ struct ContentView: View {
     private var keysSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             sectionLabel("KEYS").padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 4)
-            if state.keys.isEmpty {
-                Text("No keys yet — create one below.")
-                    .font(.system(size: 11)).foregroundStyle(t.sub)
-                    .padding(.horizontal, 14).padding(.bottom, 8)
-            }
+            if state.keys.isEmpty { emptyState }
             ForEach(state.keys) { key in
                 keyRow(key)
                 Rectangle().fill(t.div2).frame(height: 0.5).padding(.horizontal, 14)
             }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Welcome to fob")
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(t.text)
+            Text("fob keeps SSH keys in the Secure Enclave, unlocked by Touch ID. Already using SSH keys? Migrate a server — fob adds a new key alongside the old one and proves it works before you retire anything.")
+                .font(.system(size: 11.5)).foregroundStyle(t.sub).fixedSize(horizontal: false, vertical: true)
+            Button {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: MigrateView.windowID)
+            } label: {
+                Text("Migrate an existing server…")
+                    .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 14).frame(height: 28)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent))
+            }
+            .buttonStyle(.plain)
+            Text("…or create your first key below.")
+                .font(.system(size: 11)).foregroundStyle(t.sub)
+        }
+        .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 10)
     }
 
     private func keyRow(_ key: KeyInfo) -> some View {
@@ -212,19 +230,54 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 8)
 
-            Button {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: HostSetupView.windowID)
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkles")
-                    Text("Set up a remote host…")
+            if let gen = state.lastGenerated { generatedBox(gen) }
+
+            HStack(spacing: 16) {
+                linkButton("sparkles", "Set up a remote host…") {
+                    openWindow(id: HostSetupView.windowID)
                 }
-                .font(.system(size: 12)).foregroundStyle(Theme.accent)
+                linkButton("arrow.right.arrow.left", "Migrate a server…") {
+                    openWindow(id: MigrateView.windowID)
+                }
             }
-            .buttonStyle(.plain)
             .padding(.horizontal, 14).padding(.bottom, 12)
         }
+    }
+
+    private func linkButton(_ icon: String, _ title: String, _ action: @escaping () -> Void) -> some View {
+        Button {
+            NSApp.activate(ignoringOtherApps: true)
+            action()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                Text(title)
+            }
+            .font(.system(size: 12)).foregroundStyle(Theme.accent)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func generatedBox(_ gen: AppState.GeneratedKey) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("“\(gen.name)” created. Add this public key where you'll use it — a server's authorized_keys, or GitHub/GitLab:")
+                .font(.system(size: 11)).foregroundStyle(t.sub).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Text(gen.pubLine)
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(t.text)
+                    .lineLimit(2).truncationMode(.middle)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(t.fieldBg))
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(gen.pubLine, forType: .string)
+                } label: {
+                    Text("Copy").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14).padding(.bottom, 8)
     }
 
     private func generate() {

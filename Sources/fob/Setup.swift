@@ -4,26 +4,49 @@ import Foundation
 /// Guided end-to-end setup for one remote host: create (or reuse) an enclave key,
 /// export its public key, install it on the server, wire up ~/.ssh/config, verify.
 enum Setup {
-    /// `fob adopt <alias>` — convert an existing `~/.ssh/config` host to fob. Prints a
-    /// dry-run plan (generates the enclave key locally, but changes nothing on the
-    /// server or in ~/.ssh/config); the key install leans on your existing key auth,
-    /// so it's passwordless for hosts you can already reach.
+    /// `fob adopt <alias>` — convert an existing `~/.ssh/config` host to fob. By default it
+    /// performs the migration: installs the fob key on the server using your EXISTING key
+    /// (passwordless), previews + backs up + rewrites ~/.ssh/config, verifies over Touch ID,
+    /// and pins. The old key stays active as a fallback until you `--retire` it. `--dry-run`
+    /// prints the plan and changes nothing.
     static func adopt(store: KeyStore, arguments: [String]) throws {
         var rest = arguments
         let requireBiometry = rest.contains("--require-biometry")
-        rest.removeAll { $0 == "--require-biometry" }
+        let dryRun = rest.contains("--dry-run")
+        let retire = rest.contains("--retire")
+        rest.removeAll { $0.hasPrefix("--") }
         guard rest.count == 1, let alias = rest.first, KeyStore.isValidName(alias) else {
             throw AdoptError.usage
         }
 
         let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
-        let configText = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
+        let configURL = sshDir.appendingPathComponent("config")
+        let configText = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
         guard let parsed = HostSetup.parseHostBlock(alias: alias, in: configText) else {
             throw AdoptError.notConfigured(alias)
         }
         let host = parsed.hostName ?? alias
         let user = parsed.user ?? NSUserName()
         let port = parsed.port ?? 22
+        let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
+        let old = parsed.identityFiles.first(where: { !$0.contains("/fob_") })
+        let isGitProvider = ["github.com", "gitlab.com", "bitbucket.org", "ssh.github.com"].contains(host.lowercased())
+
+        // `--retire`: just comment out the old IdentityFile (run after a verified migration).
+        if retire {
+            guard let newConfig = HostSetup.migratedConfig(configText, alias: alias,
+                                                           fobPubPath: pubURL.path, socketPath: store.socketPath,
+                                                           retireOld: true), newConfig != configText else {
+                print("Nothing to retire — no active non-fob IdentityFile in `Host \(alias)`.")
+                return
+            }
+            printDiff(configText, newConfig)
+            guard confirm("Comment out the old key in ~/.ssh/config?") else { print("Cancelled."); return }
+            let backup = try HostSetup.backupAndWriteConfig(newConfig, at: configURL)
+            print("Retired. Backup: \(backup.lastPathComponent)")
+            print("Now remove the old key from the server: edit ~/.ssh/authorized_keys on \(host).")
+            return
+        }
 
         if parsed.usesFobAgent {
             print("`\(alias)` already routes through fob (its IdentityAgent is ~/.fob/agent.sock).")
@@ -40,48 +63,134 @@ enum Setup {
             key = try store.create(name: alias, requireBiometry: requireBiometry)
             print("Created Secure Enclave key '\(alias)' (\(requireBiometry ? "Touch ID only" : "Touch ID, Apple Watch, or password")).")
         }
-        let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
         let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
         try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
-
-        let portArg = port == 22 ? "" : " -p \(port)"
-        let old = parsed.identityFiles.first(where: { !$0.contains("/fob_") })
-        let isGitProvider = ["github.com", "gitlab.com", "bitbucket.org", "ssh.github.com"].contains(host.lowercased())
-
-        print("")
-        print("Adopting `\(alias)` (\(user)@\(host)\(port == 22 ? "" : ":\(port)")) into fob.")
         print("Public key exported to \(pubURL.path).")
+
+        let newConfig = HostSetup.migratedConfig(configText, alias: alias,
+                                                 fobPubPath: pubURL.path, socketPath: store.socketPath)
+
+        if dryRun {
+            printDryRun(alias: alias, host: host, user: user, port: port, pubLine: pubLine,
+                        pubPath: pubURL.path, socketPath: store.socketPath, old: old,
+                        isGitProvider: isGitProvider, newConfig: newConfig, currentConfig: configText)
+            return
+        }
+
+        // 1. Install the fob key on the server, authenticating with your current key.
+        let portArg = port == 22 ? [] : ["-p", String(port)]
+        if isGitProvider {
+            print("")
+            print("\(host) is a git host — add this key to your account (Settings → SSH keys):")
+            print("     \(pubLine)")
+            print("(then the config change below routes ssh through fob)")
+        } else {
+            guard hasControllingTerminal() else {
+                print("No terminal for ssh-copy-id's prompts — run in a real terminal, or use --dry-run.")
+                throw SetupError.copyFailed
+            }
+            print("")
+            print("Installing the fob key on \(alias) using your current key…")
+            let status = runInteractive("/usr/bin/ssh-copy-id", ["-f", "-i", pubURL.path] + portArg + [alias])
+            guard status == 0 else {
+                print("ssh-copy-id failed. Retry: ssh-copy-id -f -i \(pubURL.path) \(portArg.joined(separator: " ")) \(alias)")
+                throw SetupError.copyFailed
+            }
+        }
+
+        // 2. Rewrite ~/.ssh/config (preview + backup + confirm).
+        if let newConfig, newConfig != configText {
+            print("")
+            printDiff(configText, newConfig)
+            guard confirm("Apply this change to ~/.ssh/config?") else {
+                print("Skipped — copy the lines above into `Host \(alias)` yourself.")
+                return
+            }
+            let backup = try HostSetup.backupAndWriteConfig(newConfig, at: configURL)
+            print("Applied. Backup: \(backup.lastPathComponent)")
+        } else {
+            print("~/.ssh/config already routes \(alias) through fob.")
+        }
+
+        // 3. Verify (servers only — a git host needs the key added first).
+        if isGitProvider {
+            print("")
+            print("Test after adding the key to \(host):  ssh -T \(alias)")
+        } else if confirm("Test the connection now? (Touch ID will prompt)") {
+            let args = ["-o", "ConnectTimeout=10", "-o", "IdentitiesOnly=yes",
+                        "-o", "IdentityAgent=\(store.socketPath)", "-i", pubURL.path]
+                + portArg + ["\(user)@\(host)", "true"]
+            if runInteractive("/usr/bin/ssh", args) == 0 {
+                print("✅ fob works for \(alias). Your old key is still a fallback.")
+            } else {
+                print("Test failed — your old key still works and nothing was removed.")
+                return
+            }
+        }
+
+        // 4. Pin to this host (the connection just populated known_hosts).
+        let hostKeys = HostResolver.knownHostKeys(for: host, port: port)
+        if hostKeys.isEmpty {
+            print("Not in known_hosts yet — pin later with: fob pin \(alias) \(host)")
+        } else {
+            var policy = store.policy(name: alias)
+            policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
+            try store.savePolicy(policy, name: alias)
+            print("🔒 Pinned \(alias) to \(host) — undo with: fob unpin \(alias)")
+        }
+
+        // 5. Offer retire.
+        if old != nil {
+            print("")
+            print("Once you're confident, retire the old key:")
+            print("  fob adopt \(alias) --retire      # comment it out of ~/.ssh/config")
+            print("  then remove it from the server's ~/.ssh/authorized_keys")
+        }
+    }
+
+    /// Print the dry-run plan for `adopt` — nothing is executed.
+    private static func printDryRun(alias: String, host: String, user: String, port: Int,
+                                    pubLine: String, pubPath: String, socketPath: String,
+                                    old: String?, isGitProvider: Bool,
+                                    newConfig: String?, currentConfig: String) {
         print("")
-        print("Dry run — nothing on the server or in ~/.ssh/config was changed. To convert,")
-        print("run these steps (they use your EXISTING key, so no password is needed):")
+        print("Dry run for `\(alias)` (\(user)@\(host)\(port == 22 ? "" : ":\(port)")) — nothing was changed.")
+        print("Run without --dry-run to perform these steps (they use your EXISTING key):")
         print("")
         if isGitProvider {
             print("1. Add the fob public key to your \(host) account (Settings → SSH keys):")
-            print("")
             print("     \(pubLine)")
         } else {
-            print("1. Install the fob key on the server (authenticates with your current key):")
-            print("")
-            print("     ssh-copy-id -f -i \(pubURL.path)\(portArg) \(alias)")
+            let portArg = port == 22 ? "" : " -p \(port)"
+            print("1. Install the fob key on the server:")
+            print("     ssh-copy-id -f -i \(pubPath)\(portArg) \(alias)")
         }
         print("")
-        print("2. Point `Host \(alias)` in ~/.ssh/config at fob — ensure these lines are in")
-        print("   the block\(old.map { ", and comment out the old `IdentityFile \($0)`" } ?? ""):")
+        print("2. Rewrite `Host \(alias)` in ~/.ssh/config:")
+        if let newConfig, newConfig != currentConfig {
+            printDiff(currentConfig, newConfig)
+        } else {
+            print("   (already routes through fob)")
+        }
         print("")
-        print("     IdentityAgent \(store.socketPath)")
-        print("     IdentityFile \(pubURL.path)")
-        print("     IdentitiesOnly yes")
-        print("")
-        print("3. Test (Touch ID will prompt):")
-        print("")
-        print("     ssh \(alias) true")
-        print("")
-        print("4. Pin the key so it only works for this host:")
-        print("")
-        print("     fob pin \(alias) \(host)")
-        print("")
-        print("5. Once it works, remove the old key from \(isGitProvider ? "your \(host) account" : "the server's ~/.ssh/authorized_keys").")
+        print("3. Test:  ssh \(isGitProvider ? "-T " : "")\(alias)\(isGitProvider ? "" : " true")")
+        print("4. Pin:   fob pin \(alias) \(host)")
+        if old != nil {
+            print("5. When confident: fob adopt \(alias) --retire, then remove the old key on the server.")
+        }
+    }
+
+    /// Print a +/- unified diff of two config texts (only the changed region is interesting,
+    /// but showing context keeps it readable).
+    private static func printDiff(_ old: String, _ new: String) {
+        for line in TextDiff.lines(old: old, new: new) {
+            switch line.kind {
+            case .added: print("   + \(line.text)")
+            case .removed: print("   - \(line.text)")
+            case .same: print("     \(line.text)")
+            }
+        }
     }
 
     static func run(store: KeyStore, arguments: [String]) throws {
@@ -383,7 +492,7 @@ enum AdoptError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .usage:
-            return "usage: fob adopt <alias> [--require-biometry]"
+            return "usage: fob adopt <alias> [--dry-run] [--retire] [--require-biometry]"
         case .notConfigured(let alias):
             return "no `Host \(alias)` entry in ~/.ssh/config — for a brand-new host use: fob setup \(alias)"
         }
