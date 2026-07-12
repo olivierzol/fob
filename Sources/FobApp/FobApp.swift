@@ -22,6 +22,16 @@ struct FobApp: App {
             SigningSetupView().environmentObject(state)
         }
         .windowResizability(.contentSize)
+
+        Window("Migrate to fob", id: MigrateView.windowID) {
+            MigrateView().environmentObject(state)
+        }
+        .windowResizability(.contentSize)
+
+        Window("Migrate a server", id: MigrateHostView.windowID) {
+            MigrateHostView().environmentObject(state)
+        }
+        .windowResizability(.contentSize)
     }
 }
 

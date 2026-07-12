@@ -20,14 +20,19 @@ USAGE:
       commands for you to inspect and run yourself — nothing is executed
       and ~/.ssh/config is not touched.
 
-  fob adopt <alias> [--require-biometry]
-      Convert an existing ~/.ssh/config host to fob. Prints a dry-run plan
-      (generates the enclave key locally but changes nothing on the server or
-      in ~/.ssh/config); the install step reuses your current key, so it's
-      passwordless for hosts you can already reach.
+  fob adopt <alias> [--dry-run] [--retire] [--require-biometry]
+      Convert an existing ~/.ssh/config host to fob. Installs the fob key on the
+      server using your CURRENT key (passwordless), backs up + rewrites the config
+      block (with a diff + confirm), verifies over Touch ID, and pins. The old key
+      stays active as a fallback — no lockout. --dry-run prints the plan and changes
+      nothing; --retire comments out the old key after you've verified fob works.
 
   fob list
       Print the public keys in authorized_keys format.
+
+  fob delete <name> [--force]
+      Permanently erase a key from the Secure Enclave (asks to confirm; --force
+      skips). Remove its public key from any server/host that still trusts it.
 
   fob pin <name> <host>
       Pin a key to a host: the agent will refuse to sign with this key for
@@ -130,6 +135,23 @@ do {
         for key in keys {
             print(SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(key.name)"))
         }
+
+    case "delete":
+        var rest = Array(arguments.dropFirst())
+        let force = rest.contains("--force") || rest.contains("-y")
+        rest.removeAll { $0.hasPrefix("-") }
+        guard rest.count == 1, let name = rest.first else {
+            fail("usage: fob delete <name> [--force]")
+        }
+        _ = try store.find(name: name) // 404s cleanly before we prompt
+        if !force {
+            print("Delete key '\(name)'? The Secure Enclave key is erased permanently and "
+                + "cannot be recovered. [y/N]: ", terminator: "")
+            let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+            guard answer == "y" || answer == "yes" else { print("Cancelled."); break }
+        }
+        try store.remove(name: name)
+        print("Deleted '\(name)'. Remove its public key from any server/host that still trusts it.")
 
     case "pin":
         let rest = Array(arguments.dropFirst())

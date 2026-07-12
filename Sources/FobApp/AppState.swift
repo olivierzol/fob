@@ -29,6 +29,8 @@ final class AppState: ObservableObject {
     @Published var actionError: String?
     /// The key the "Commit signing" window is set up for (set before opening it).
     @Published var signingSetupKey: String?
+    /// The alias the "Migrate a server" window is set up for (set before opening it).
+    @Published var migrateAlias: String?
 
     private let store: KeyStore?
     private var agent: Agent?
@@ -100,8 +102,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The most recently generated key's public line, so the panel can show a copyable
+    /// key + "what next" instead of leaving a freshly generated key as a dead end.
+    struct GeneratedKey: Equatable { let name: String; let pubLine: String }
+    @Published var lastGenerated: GeneratedKey?
+
     func generate(name: String, requireBiometry: Bool) {
-        run { store in _ = try store.create(name: name, requireBiometry: requireBiometry) }
+        guard let store else { actionError = "store unavailable"; return }
+        do {
+            let key = try store.create(name: name, requireBiometry: requireBiometry)
+            lastGenerated = GeneratedKey(
+                name: name,
+                pubLine: SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)"))
+            actionError = nil
+        } catch {
+            actionError = error.localizedDescription
+        }
+        refreshKeys()
     }
 
     func delete(name: String) {
@@ -222,6 +239,199 @@ final class AppState: ObservableObject {
             return nil
         } catch {
             return error.localizedDescription
+        }
+    }
+
+    // MARK: - Server migration (the "Migrate" windows)
+
+    /// An existing `~/.ssh/config` server, as a migration candidate.
+    struct MigrationCandidate: Identifiable {
+        let alias: String
+        let host: String
+        let user: String
+        let port: Int
+        let usesFob: Bool
+        let oldIdentityFiles: [String]
+        var id: String { alias }
+        var destination: String { port == 22 ? "\(user)@\(host)" : "\(user)@\(host):\(port)" }
+    }
+
+    enum InstallOutcome {
+        case installed        // fob key appended to the server's authorized_keys
+        case alreadyPresent   // it was already there
+        // headless install couldn't run — do it in a terminal. `detail` is the sanitized
+        // ssh output (why it failed), empty if there was none.
+        case needsManual(command: String, detail: String)
+        case failed(String)   // a real error (bad alias / key store)
+    }
+
+    /// Result of a ~/.ssh/config write: the backup filename on success, else a message.
+    enum ConfigWriteResult {
+        case ok(backup: String)
+        case error(String)
+    }
+
+    private var sshConfigURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/config")
+    }
+    private func fobPubURL(_ alias: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/fob_\(alias).pub")
+    }
+
+    /// Every literal `Host` block in ~/.ssh/config, as migration candidates.
+    func discoverServers() -> [MigrationCandidate] {
+        let text = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        return HostSetup.listHostBlocks(in: text).map { block in
+            MigrationCandidate(
+                alias: block.alias,
+                host: block.parsed.hostName ?? block.alias,
+                user: block.parsed.user ?? NSUserName(),
+                port: block.parsed.port ?? 22,
+                usesFob: block.usesFob,
+                oldIdentityFiles: block.parsed.identityFiles.filter { !$0.contains("/fob_") })
+        }
+    }
+
+    /// The candidate for a single alias (re-read fresh from config).
+    func migrationCandidate(alias: String) -> MigrationCandidate? {
+        discoverServers().first { $0.alias == alias }
+    }
+
+    /// Whether git commit signing is already configured (informational in the migrate view).
+    func gitSigningInfo() -> GitConfig.SigningInfo {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gitconfig")
+        return GitConfig.parse((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+    }
+
+    /// Create (or reuse) the fob key, export its public key, and install it on the server
+    /// using the host's CURRENT key (headless, passwordless). Runs BEFORE the config is
+    /// rewritten, so `ssh <alias>` still authenticates with the old key. `.failure` is a
+    /// real error (bad alias / key store); an unreachable/passphrase-locked host resolves
+    /// to `.success(.needsManual)` with a copy-paste fallback.
+    func createAndInstall(_ c: MigrationCandidate, requireBiometry: Bool) async -> InstallOutcome {
+        guard let store else { return .failed("Key store unavailable.") }
+        guard KeyStore.isValidName(c.alias) else { return .failed("Invalid alias “\(c.alias)”.") }
+        let pubLine: String
+        do {
+            let key: StoredKey
+            if let existing = try? store.find(name: c.alias) { key = existing }
+            else { key = try store.create(name: c.alias, requireBiometry: requireBiometry) }
+            pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(c.alias)")
+            let pubURL = fobPubURL(c.alias)
+            try FileManager.default.createDirectory(at: pubURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            refreshKeys()
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        let fallback = HostSetup.fallbackCopyCommand(alias: c.alias, fobPubPath: fobPubURL(c.alias).path, port: c.port)
+        guard let args = HostSetup.installArguments(alias: c.alias) else {
+            return .needsManual(command: fallback, detail: "")
+        }
+        let (status, output) = await runProcess("/usr/bin/ssh", args, stdin: pubLine + "\n")
+        if status == 0 && output.contains("fob-installed") { return .installed }
+        if status == 0 && output.contains("fob-present") { return .alreadyPresent }
+        return .needsManual(command: fallback, detail: HostSetup.sanitizeForDisplay(output))
+    }
+
+    /// The `old → new` ~/.ssh/config text for the diff preview, or nil if there's no
+    /// literal block (or it's already fully migrated).
+    func configDiff(alias: String) -> (old: String, new: String)? {
+        guard let store else { return nil }
+        let old = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        guard let new = HostSetup.migratedConfig(old, alias: alias,
+                                                 fobPubPath: fobPubURL(alias).path,
+                                                 socketPath: store.socketPath),
+              new != old else { return nil }
+        return (old, new)
+    }
+
+    /// Back up ~/.ssh/config and write the migrated version. Returns the backup filename
+    /// on success (for undo guidance), or an error message.
+    func applyConfigMigration(alias: String) -> ConfigWriteResult {
+        guard let store else { return .error("Key store unavailable.") }
+        let old = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        guard let new = HostSetup.migratedConfig(old, alias: alias,
+                                                 fobPubPath: fobPubURL(alias).path,
+                                                 socketPath: store.socketPath) else {
+            return .error("No “Host \(alias)” block found in ~/.ssh/config.")
+        }
+        do {
+            let backup = try HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
+            return .ok(backup: backup.lastPathComponent)
+        } catch {
+            return .error(error.localizedDescription)
+        }
+    }
+
+    /// Prove fob works for this host by connecting with ONLY the fob identity (not the
+    /// old-key fallback), so a green check means fob specifically succeeded. Touch ID
+    /// prompts. Returns nil on success, else an error message.
+    func verifyMigration(_ c: MigrationCandidate) async -> String? {
+        guard let store else { return "Key store unavailable." }
+        var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "IdentitiesOnly=yes",
+                    "-o", "IdentityAgent=\(store.socketPath)",
+                    "-i", fobPubURL(c.alias).path]
+        if c.port != 22 { args += ["-p", String(c.port)] }
+        args += ["\(c.user)@\(c.host)", "true"]
+        let (status, output) = await runProcess("/usr/bin/ssh", args)
+        guard status == 0 else {
+            let tail = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "Test connection failed — your existing key still works, nothing was removed."
+                + (tail.isEmpty ? "" : "\n\(tail)")
+        }
+        return nil
+    }
+
+    /// Comment out the old `IdentityFile` in the block (the explicit, optional retire step),
+    /// after the user has confirmed fob works. Returns the backup filename or an error.
+    func retireOldKey(alias: String) -> ConfigWriteResult {
+        guard let store else { return .error("Key store unavailable.") }
+        let old = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        guard let new = HostSetup.migratedConfig(old, alias: alias,
+                                                 fobPubPath: fobPubURL(alias).path,
+                                                 socketPath: store.socketPath, retireOld: true) else {
+            return .error("No “Host \(alias)” block found in ~/.ssh/config.")
+        }
+        do {
+            let backup = try HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
+            return .ok(backup: backup.lastPathComponent)
+        } catch {
+            return .error(error.localizedDescription)
+        }
+    }
+
+    /// Run a subprocess off the main actor, feeding `stdin` if given, capturing merged
+    /// stdout+stderr. `/usr/bin/ssh` bounds itself via BatchMode + ConnectTimeout.
+    private func runProcess(_ launchPath: String, _ args: [String], stdin: String? = nil) async -> (status: Int32, output: String) {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: launchPath)
+                process.arguments = args
+                let outPipe = Pipe()
+                process.standardOutput = outPipe
+                process.standardError = outPipe
+                var inPipe: Pipe?
+                if stdin != nil { let p = Pipe(); process.standardInput = p; inPipe = p }
+                do {
+                    try process.run()
+                    if let stdin, let inPipe {
+                        inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+                        try? inPipe.fileHandleForWriting.close()
+                    }
+                    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
+                } catch {
+                    continuation.resume(returning: (-1, error.localizedDescription))
+                }
+            }
         }
     }
 
