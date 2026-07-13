@@ -87,9 +87,19 @@ fob adopt myserver --retire      # comment the old key out of ~/.ssh/config
 # then remove the old public key from the server's ~/.ssh/authorized_keys
 ```
 
-**From the menu-bar app:** open the panel → **Migrate a server…**. It lists the hosts in your `~/.ssh/config` and walks each one through install → config diff → **Verify (Touch ID)** → pin → optional retire, with a timestamped `~/.ssh/config` backup at every write.
+**From the menu-bar app:** open the panel → **Migrate…**. It lists the hosts in your `~/.ssh/config` and walks each one through install → config diff → **Verify (Touch ID)** → pin → optional retire, with a timestamped `~/.ssh/config` backup at every write.
 
-> Git hosts (GitHub/GitLab) don't take an `ssh-copy-id` install — `adopt` prints the public key to add under **Settings → SSH keys** instead, then wires up the config. To move commit *signing* to fob, use a key's ••• → **Use for commit signing…** (see below).
+### Git hosts (GitHub, GitLab, …)
+
+Git hosts have no shell, so instead of `ssh-copy-id` you add the key on the web. fob handles this: **Migrate…** lists your `github-*`/`gitlab-*` blocks (badged by provider), and **Set up a host…** has a **Git host** option for a brand-new one. The flow:
+
+1. **Create key & open <provider>** — copies the pubkey and deep-links to the SSH-keys page; add it as an **Authentication Key**.
+2. Config is rewritten to route the alias through fob (alongside your old key).
+3. **Verify** runs `ssh -T` and confirms *"Authenticated as <you>"* over Touch ID.
+
+`fob adopt <alias>` does the same from the CLI (prints the deep-link + key to add).
+
+> **Signing is separate.** On GitHub a *signing* key is a distinct entry — add the same fob key **again** as a **Signing Key** (GitLab lets one key do both). Use **Sign commits with this key →** in the migrate flow, or a key's ••• → **Use for commit signing…** (see below).
 
 ## How it works
 

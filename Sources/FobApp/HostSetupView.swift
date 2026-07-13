@@ -10,7 +10,11 @@ struct HostSetupView: View {
 
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
 
+    private enum Mode: Hashable { case server, git }
+
+    @State private var mode: Mode = .server
     @State private var alias = ""
     @State private var host = ""
     @State private var user = NSUserName()
@@ -21,6 +25,11 @@ struct HostSetupView: View {
     @State private var pinMessage: String?
     @State private var pinned = false
     @State private var copied = false
+
+    // Git-host mode.
+    @State private var provider: HostSetup.GitProvider = .github
+    @State private var gitAlias = ""
+    @State private var customHost = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -38,6 +47,31 @@ struct HostSetupView: View {
     // MARK: Form
 
     private var formView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("Kind", selection: $mode) {
+                Text("Server (SSH login)").tag(Mode.server)
+                Text("Git host").tag(Mode.git)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+
+            if mode == .server { serverForm } else { gitForm }
+
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Set up") { setUp() }
+                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .disabled(!formValid)
+            }
+        }
+    }
+
+    private var serverForm: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Creates a Secure Enclave key and a `~/.ssh/config` entry. You'll run one command on the server to install the public key.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -57,19 +91,47 @@ struct HostSetupView: View {
 
             Toggle("Touch ID only (currently enrolled fingerprints)", isOn: $touchIDOnly)
                 .toggleStyle(.checkbox).font(.callout)
+        }
+    }
 
-            if let error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+    private var gitForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Creates a Secure Enclave key and a `~/.ssh/config` entry for a git host. You'll add the public key to your account on the web (git hosts have no shell).")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    Text("Provider").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                    Picker("Provider", selection: $provider) {
+                        Text("GitHub").tag(HostSetup.GitProvider.github)
+                        Text("GitLab").tag(HostSetup.GitProvider.gitlab)
+                        Text("Bitbucket").tag(HostSetup.GitProvider.bitbucket)
+                        Text("Codeberg").tag(HostSetup.GitProvider.codeberg)
+                        Text("Other…").tag(HostSetup.GitProvider.other)
+                    }
+                    .labelsHidden().frame(maxWidth: 200, alignment: .leading)
+                }
+                if provider == .other {
+                    field("Host", "git.example.com", $customHost)
+                }
+                field("Alias", "github-work", $gitAlias)
             }
 
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Set up") { setUp() }
-                    .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
-                    .disabled(!formValid)
-            }
+            Text("The alias keeps multiple accounts separate (e.g. `github-work` vs `github-personal`) and is the key's name.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Touch ID only (currently enrolled fingerprints)", isOn: $touchIDOnly)
+                .toggleStyle(.checkbox).font(.callout)
+        }
+    }
+
+    private func providerHost() -> String {
+        switch provider {
+        case .github: return "github.com"
+        case .gitlab: return "gitlab.com"
+        case .bitbucket: return "bitbucket.org"
+        case .codeberg: return "codeberg.org"
+        case .other: return customHost.trimmingCharacters(in: .whitespaces)
         }
     }
 
@@ -81,10 +143,15 @@ struct HostSetupView: View {
     }
 
     private var formValid: Bool {
-        [alias, host, user].allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        if mode == .git {
+            let hostOK = provider != .other || !customHost.trimmingCharacters(in: .whitespaces).isEmpty
+            return hostOK && !gitAlias.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        return [alias, host, user].allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
     private func setUp() {
+        if mode == .git { setUpGit(); return }
         let trimmedPort = portText.trimmingCharacters(in: .whitespaces)
         guard let port = Int(trimmedPort.isEmpty ? "22" : trimmedPort) else {
             error = "Port must be a number (1–65535)."; return
@@ -93,6 +160,20 @@ struct HostSetupView: View {
         case .success(let r): result = r; error = nil
         case .failure(let message): error = message
         }
+    }
+
+    /// Create the key + git `Host` block, then hand off to the per-host git flow
+    /// (add-to-account → verify → pin/sign) in MigrateHostView.
+    private func setUpGit() {
+        let a = gitAlias.trimmingCharacters(in: .whitespaces)
+        if let err = state.addGitHost(alias: a, hostName: providerHost(), requireBiometry: touchIDOnly) {
+            error = err; return
+        }
+        error = nil
+        state.migrateAlias = a
+        dismiss()
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: MigrateHostView.windowID)
     }
 
     // MARK: Result

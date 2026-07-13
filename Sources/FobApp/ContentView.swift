@@ -233,10 +233,10 @@ struct ContentView: View {
             if let gen = state.lastGenerated { generatedBox(gen) }
 
             HStack(spacing: 16) {
-                linkButton("sparkles", "Set up a remote host…") {
+                linkButton("sparkles", "Set up a host…") {
                     openWindow(id: HostSetupView.windowID)
                 }
-                linkButton("arrow.right.arrow.left", "Migrate a server…") {
+                linkButton("arrow.right.arrow.left", "Migrate…") {
                     openWindow(id: MigrateView.windowID)
                 }
             }
@@ -275,6 +275,15 @@ struct ContentView: View {
                     Text("Copy").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.accent)
                 }
                 .buttonStyle(.plain)
+            }
+            HStack(spacing: 14) {
+                Text("Use for:").font(.system(size: 11)).foregroundStyle(t.sub)
+                linkButton("sparkles", "a host…") { openWindow(id: HostSetupView.windowID) }
+                linkButton("signature", "commit signing…") {
+                    state.signingSetupKey = gen.name
+                    state.signingSetupHost = nil
+                    openWindow(id: SigningSetupView.windowID)
+                }
             }
         }
         .padding(.horizontal, 14).padding(.bottom, 8)
@@ -392,6 +401,7 @@ struct ContentView: View {
             menuItem("Pin to host…", color: t.text) { state.requestPin(name: key.name) }
             menuItem("Use for commit signing…", color: t.text) {
                 state.signingSetupKey = key.name
+                state.signingSetupHost = nil
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: SigningSetupView.windowID)
             }
