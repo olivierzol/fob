@@ -30,7 +30,8 @@ enum Setup {
         let port = parsed.port ?? 22
         let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
         let old = parsed.identityFiles.first(where: { !$0.contains("/fob_") })
-        let isGitProvider = ["github.com", "gitlab.com", "bitbucket.org", "ssh.github.com"].contains(host.lowercased())
+        let isGitProvider = HostSetup.isGitHost(hostName: host, user: user)
+        let settingsURL = HostSetup.sshKeySettingsURL(forHost: host)
 
         // `--retire`: just comment out the old IdentityFile (run after a verified migration).
         if retire {
@@ -74,7 +75,8 @@ enum Setup {
         if dryRun {
             printDryRun(alias: alias, host: host, user: user, port: port, pubLine: pubLine,
                         pubPath: pubURL.path, socketPath: store.socketPath, old: old,
-                        isGitProvider: isGitProvider, newConfig: newConfig, currentConfig: configText)
+                        isGitProvider: isGitProvider, settingsURL: settingsURL,
+                        newConfig: newConfig, currentConfig: configText)
             return
         }
 
@@ -82,9 +84,10 @@ enum Setup {
         let portArg = port == 22 ? [] : ["-p", String(port)]
         if isGitProvider {
             print("")
-            print("\(host) is a git host — add this key to your account (Settings → SSH keys):")
+            print("\(host) is a git host — add this key to your account as an Authentication Key:")
+            if let settingsURL { print("     \(settingsURL.absoluteString)") }
             print("     \(pubLine)")
-            print("(then the config change below routes ssh through fob)")
+            print("(then the config change below routes ssh through fob; test with: ssh -T \(alias))")
         } else {
             guard hasControllingTerminal() else {
                 print("No terminal for ssh-copy-id's prompts — run in a real terminal, or use --dry-run.")
@@ -152,14 +155,15 @@ enum Setup {
     /// Print the dry-run plan for `adopt` — nothing is executed.
     private static func printDryRun(alias: String, host: String, user: String, port: Int,
                                     pubLine: String, pubPath: String, socketPath: String,
-                                    old: String?, isGitProvider: Bool,
+                                    old: String?, isGitProvider: Bool, settingsURL: URL?,
                                     newConfig: String?, currentConfig: String) {
         print("")
         print("Dry run for `\(alias)` (\(user)@\(host)\(port == 22 ? "" : ":\(port)")) — nothing was changed.")
         print("Run without --dry-run to perform these steps (they use your EXISTING key):")
         print("")
         if isGitProvider {
-            print("1. Add the fob public key to your \(host) account (Settings → SSH keys):")
+            print("1. Add the fob public key to your \(host) account as an Authentication Key:")
+            if let settingsURL { print("     \(settingsURL.absoluteString)") }
             print("     \(pubLine)")
         } else {
             let portArg = port == 22 ? "" : " -p \(port)"

@@ -190,6 +190,82 @@ final class MigrationTests: XCTestCase {
             .contains("-p 2222"))
     }
 
+    // MARK: - HostResolver alias disambiguation (multi-account same-host)
+
+    func testConfigAliasPrefersKeyNameWhenSameHost() {
+        let config = """
+        Host github-feedly
+          HostName github.com
+          User git
+        Host github-ousson
+          HostName github.com
+          User git
+        """
+        // Without a hint, first block wins (ssh's own default).
+        XCTAssertEqual(HostResolver.configAlias(inConfig: config, forHostName: "github.com", preferredAlias: nil),
+                       "github-feedly")
+        // With the signing key's name, the matching alias wins.
+        XCTAssertEqual(HostResolver.configAlias(inConfig: config, forHostName: "github.com", preferredAlias: "github-ousson"),
+                       "github-ousson")
+        // A preferred alias that isn't a match falls back to first.
+        XCTAssertEqual(HostResolver.configAlias(inConfig: config, forHostName: "github.com", preferredAlias: "nope"),
+                       "github-feedly")
+    }
+
+    func testConfigAliasNoMatch() {
+        XCTAssertNil(HostResolver.configAlias(inConfig: "Host x\n  HostName a.com\n",
+                                              forHostName: "b.com", preferredAlias: "x"))
+    }
+
+    // MARK: - git hosts
+
+    func testIsGitHost() {
+        XCTAssertTrue(HostSetup.isGitHost(hostName: "github.com", user: "git"))
+        XCTAssertTrue(HostSetup.isGitHost(hostName: "gitlab.com", user: nil))
+        XCTAssertTrue(HostSetup.isGitHost(hostName: "github.mycorp.com", user: "git"))
+        XCTAssertFalse(HostSetup.isGitHost(hostName: "192.168.1.10", user: "oliv"))
+        XCTAssertFalse(HostSetup.isGitHost(hostName: "server.example.com", user: "deploy"))
+    }
+
+    func testGitProviderAndURL() {
+        XCTAssertEqual(HostSetup.gitProvider(forHost: "ssh.github.com"), .github)
+        XCTAssertEqual(HostSetup.gitProvider(forHost: "gitlab.com"), .gitlab)
+        XCTAssertEqual(HostSetup.gitProvider(forHost: "server.example.com"), .other)
+        // ssh alias normalizes to the public web host…
+        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "ssh.github.com")?.absoluteString,
+                       "https://github.com/settings/ssh/new")
+        // …enterprise keeps its own host…
+        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "github.mycorp.com")?.absoluteString,
+                       "https://github.mycorp.com/settings/ssh/new")
+        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "gitlab.com")?.absoluteString,
+                       "https://gitlab.com/-/user_settings/ssh_keys")
+        // …unknown self-hosted has no reliable URL.
+        XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "git.example.com"))
+    }
+
+    func testParseSSHGreeting() {
+        let gh = HostSetup.parseSSHGreeting("Hi ousson! You've successfully authenticated, but GitHub does not provide shell access.")
+        XCTAssertTrue(gh.authenticated)
+        XCTAssertEqual(gh.user, "ousson")
+
+        let gl = HostSetup.parseSSHGreeting("Welcome to GitLab, @oliv!")
+        XCTAssertTrue(gl.authenticated)
+        XCTAssertEqual(gl.user, "oliv")
+
+        let bb = HostSetup.parseSSHGreeting("authenticated via ssh key.\nYou can use git to connect to Bitbucket. Shell access is disabled.\nlogged in as oliv.")
+        XCTAssertTrue(bb.authenticated)
+        XCTAssertEqual(bb.user, "oliv")
+
+        let denied = HostSetup.parseSSHGreeting("git@github.com: Permission denied (publickey).")
+        XCTAssertFalse(denied.authenticated)
+        XCTAssertNil(denied.user)
+    }
+
+    func testInstallHintDetectsGitHost() {
+        let hint = HostSetup.installFailureHint("Hi ousson! You've successfully authenticated, but GitHub does not provide shell access.")
+        XCTAssertTrue(hint.lowercased().contains("git host"))
+    }
+
     // MARK: - installFailureHint
 
     func testHintPermissionDeniedMentionsPassphrase() {

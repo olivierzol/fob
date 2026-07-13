@@ -29,6 +29,9 @@ final class AppState: ObservableObject {
     @Published var actionError: String?
     /// The key the "Commit signing" window is set up for (set before opening it).
     @Published var signingSetupKey: String?
+    /// Optional git host the signing window was opened for (from the git-host migrate
+    /// flow), so it can deep-link to that provider's SSH-keys page. nil = generic entry.
+    @Published var signingSetupHost: String?
     /// The alias the "Migrate a server" window is set up for (set before opening it).
     @Published var migrateAlias: String?
 
@@ -252,9 +255,14 @@ final class AppState: ObservableObject {
         let port: Int
         let usesFob: Bool
         let oldIdentityFiles: [String]
+        let isGitHost: Bool
+        let provider: HostSetup.GitProvider
+        let settingsURL: URL?
         var id: String { alias }
         var destination: String { port == 22 ? "\(user)@\(host)" : "\(user)@\(host):\(port)" }
     }
+
+    enum GitKeyResult { case ok(pubLine: String); case error(String) }
 
     enum InstallOutcome {
         case installed        // fob key appended to the server's authorized_keys
@@ -282,13 +290,21 @@ final class AppState: ObservableObject {
     func discoverServers() -> [MigrationCandidate] {
         let text = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
         return HostSetup.listHostBlocks(in: text).map { block in
-            MigrationCandidate(
+            let host = block.parsed.hostName ?? block.alias
+            let declaredUser = block.parsed.user
+            let isGit = HostSetup.isGitHost(hostName: host, user: declaredUser)
+            // Git hosts log in as `git`; only fall back to the local username for servers.
+            let user = declaredUser ?? (isGit ? "git" : NSUserName())
+            return MigrationCandidate(
                 alias: block.alias,
-                host: block.parsed.hostName ?? block.alias,
-                user: block.parsed.user ?? NSUserName(),
+                host: host,
+                user: user,
                 port: block.parsed.port ?? 22,
                 usesFob: block.usesFob,
-                oldIdentityFiles: block.parsed.identityFiles.filter { !$0.contains("/fob_") })
+                oldIdentityFiles: block.parsed.identityFiles.filter { !$0.contains("/fob_") },
+                isGitHost: isGit,
+                provider: isGit ? HostSetup.gitProvider(forHost: host) : .other,
+                settingsURL: isGit ? HostSetup.sshKeySettingsURL(forHost: host) : nil)
         }
     }
 
@@ -386,6 +402,98 @@ final class AppState: ObservableObject {
                 + (tail.isEmpty ? "" : "\n\(tail)")
         }
         return nil
+    }
+
+    /// Greenfield git host: create the fob key and write a NEW `Host <alias>` block routed
+    /// through fob (User git). Returns nil on success or an error message. The caller then
+    /// runs the same add-to-account → verify flow as an existing git host.
+    func addGitHost(alias rawAlias: String, hostName: String, requireBiometry: Bool) -> String? {
+        let alias = rawAlias.trimmingCharacters(in: .whitespaces)
+        guard KeyStore.isValidName(alias) else {
+            return "Invalid alias — letters, digits, '.', '_', '-' (not starting with '-')."
+        }
+        guard HostSetup.isValidHostToken(hostName) else { return "Invalid host name." }
+        guard let store else { return "Key store unavailable." }
+        do {
+            if (try? store.find(name: alias)) == nil {
+                _ = try store.create(name: alias, requireBiometry: requireBiometry)
+            }
+            let pubURL = fobPubURL(alias)
+            let key = try store.find(name: alias)
+            let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
+            try FileManager.default.createDirectory(at: pubURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+
+            let existing = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+            if !HostSetup.hostBlockExists(alias: alias, in: existing) {
+                let block = HostSetup.configBlock(alias: alias, host: hostName, user: "git",
+                                                  pubPath: pubURL.path, socketPath: store.socketPath)
+                let separator = existing.isEmpty ? "" : (existing.hasSuffix("\n") ? "\n" : "\n\n")
+                try Data((existing + separator + block + "\n").utf8).write(to: sshConfigURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sshConfigURL.path)
+            }
+            refreshKeys()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Git hosts have no shell — the key is added on the web, not via ssh-copy-id. Create/
+    /// reuse the fob key and export its public line to paste into the account's SSH keys.
+    func prepareGitKey(_ c: MigrationCandidate, requireBiometry: Bool) -> GitKeyResult {
+        guard let store else { return .error("Key store unavailable.") }
+        guard KeyStore.isValidName(c.alias) else { return .error("Invalid alias “\(c.alias)”.") }
+        do {
+            let key: StoredKey
+            if let existing = try? store.find(name: c.alias) { key = existing }
+            else { key = try store.create(name: c.alias, requireBiometry: requireBiometry) }
+            let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(c.alias)")
+            let pubURL = fobPubURL(c.alias)
+            try FileManager.default.createDirectory(at: pubURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            refreshKeys()
+            return .ok(pubLine: pubLine)
+        } catch {
+            return .error(error.localizedDescription)
+        }
+    }
+
+    /// Prove the fob key works on a git host with `ssh -T` (no remote command). Success is
+    /// read from the greeting, not the exit code (`ssh -T git@github.com` exits non-zero
+    /// even when it works). Connects with ONLY the fob identity so a pass means fob.
+    func verifyGitHost(_ c: MigrationCandidate) async -> (ok: Bool, message: String) {
+        guard let store else { return (false, "Key store unavailable.") }
+        var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "IdentitiesOnly=yes",
+                    "-o", "IdentityAgent=\(store.socketPath)",
+                    "-i", fobPubURL(c.alias).path, "-T"]
+        if c.port != 22 { args += ["-p", String(c.port)] }
+        args += ["\(c.user)@\(c.host)"]
+        let (_, output) = await runProcess("/usr/bin/ssh", args)
+        let greeting = HostSetup.parseSSHGreeting(output)
+        if greeting.authenticated {
+            let who = greeting.user.map { " as “\($0)”" } ?? ""
+            return (true, "Authenticated\(who) with fob — Touch ID now gates \(c.host).")
+        }
+        let tail = HostSetup.sanitizeForDisplay(output)
+        if output.lowercased().contains("permission denied") {
+            return (false, "Not authenticated yet — add this key to \(c.provider.displayName) as an Authentication Key first."
+                + (tail.isEmpty ? "" : "\n\(tail)"))
+        }
+        return (false, "Couldn't verify." + (tail.isEmpty ? "" : "\n\(tail)"))
+    }
+
+    /// Open a URL (the provider's SSH-keys settings page) in the default browser.
+    func openSettings(_ url: URL) {
+        NSWorkspace.shared.open(url)
     }
 
     /// Comment out the old `IdentityFile` in the block (the explicit, optional retire step),

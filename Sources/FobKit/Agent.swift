@@ -244,17 +244,20 @@ public final class Agent: @unchecked Sendable {
         let dataToSign = try reader.readString()
         _ = try? reader.readUInt32() // flags — only meaningful for RSA
 
-        let destination = SessionBinding.describe(bindings)
         guard let key = try store.all().first(where: { candidate in
             guard let publicKey = try? candidate.publicKey() else { return false }
             return SSHFormat.publicKeyBlob(publicKey) == requestedBlob
         }) else {
+            let destination = SessionBinding.describe(bindings)
             log("sign request from \(peer) for \(destination) with unknown key")
             audit.record("unknown-key", destination: destination, peer: peer)
             announce(.unknownKey, "⚠️ \(peer) requested a signature for \(destination) with a key this agent does not have",
                      destination: destination, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
+        // Prefer the alias matching the key name so multiple Host blocks sharing one
+        // HostName (github-work / github-personal → github.com) attribute correctly.
+        let destination = SessionBinding.describe(bindings, preferredAlias: key.name)
 
         // Fail closed: a policy file that exists but can't be read/decoded must never
         // silently degrade to the open default and drop a pin. Refuse until it's fixed.

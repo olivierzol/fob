@@ -269,11 +269,89 @@ public enum HostSetup {
         return parts.joined(separator: " ")
     }
 
+    // MARK: - Git hosts (GitHub/GitLab/… — no shell, key added via the web)
+
+    public enum GitProvider: Equatable {
+        case github, gitlab, bitbucket, codeberg, other
+        public var displayName: String {
+            switch self {
+            case .github: return "GitHub"
+            case .gitlab: return "GitLab"
+            case .bitbucket: return "Bitbucket"
+            case .codeberg: return "Codeberg"
+            case .other: return "your git host"
+            }
+        }
+    }
+
+    /// Classify a HostName by provider (substring match also covers enterprise hosts
+    /// like github.mycorp.com / gitlab.internal).
+    public static func gitProvider(forHost host: String) -> GitProvider {
+        let h = host.lowercased()
+        if h.contains("github") { return .github }
+        if h.contains("gitlab") { return .gitlab }
+        if h.contains("bitbucket") { return .bitbucket }
+        if h.contains("codeberg") || h.contains("gitea") || h.contains("forgejo") { return .codeberg }
+        return .other
+    }
+
+    /// A `Host` block is a git host if it logs in as `git` or its HostName is a known
+    /// provider — either way there's no shell and the key is registered on the web.
+    public static func isGitHost(hostName: String, user: String?) -> Bool {
+        if (user ?? "").lowercased() == "git" { return true }
+        return gitProvider(forHost: hostName) != .other
+    }
+
+    /// Deep link to the provider's "add SSH key" page (nil for unknown self-hosted).
+    /// Normalizes ssh aliases (ssh.github.com, gist.github.com) to the public web host,
+    /// while leaving an enterprise host (github.mycorp.com) as-is.
+    public static func sshKeySettingsURL(forHost host: String) -> URL? {
+        let h = host.lowercased()
+        func web(_ known: String) -> String { (h == known || h.hasSuffix(".\(known)")) ? known : host }
+        switch gitProvider(forHost: host) {
+        case .github:    return URL(string: "https://\(web("github.com"))/settings/ssh/new")
+        case .gitlab:    return URL(string: "https://\(web("gitlab.com"))/-/user_settings/ssh_keys")
+        case .bitbucket: return URL(string: "https://bitbucket.org/account/settings/ssh-keys/")
+        case .codeberg:  return URL(string: "https://\(web("codeberg.org"))/user/settings/keys")
+        case .other:     return nil
+        }
+    }
+
+    /// Parse an `ssh -T` greeting. `ssh -T git@github.com` exits NON-zero even on success,
+    /// so we detect success by the greeting text, not the exit code, and pull out the
+    /// authenticated username when the provider includes it.
+    public static func parseSSHGreeting(_ output: String) -> (authenticated: Bool, user: String?) {
+        let lower = output.lowercased()
+        let authed = lower.contains("successfully authenticated")
+            || lower.contains("does not provide shell access")
+            || lower.contains("welcome to gitlab")
+            || lower.contains("logged in as")
+            || lower.contains("authenticated via ssh")
+        guard authed else { return (false, nil) }
+        let user =
+            firstCapture(in: output, pattern: #"Hi ([^!]+)!"#)                 // GitHub
+            ?? firstCapture(in: output, pattern: #"Welcome to GitLab, @([^!]+)!"#) // GitLab
+            ?? firstCapture(in: output, pattern: #"logged in as ([^.\s]+)"#)   // Bitbucket
+        return (true, user?.trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func firstCapture(in text: String, pattern: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let m = re.firstMatch(in: text, range: range), m.numberOfRanges > 1,
+              let r = Range(m.range(at: 1), in: text) else { return nil }
+        return String(text[r])
+    }
+
     /// Turn a failed headless-install ssh error into a plain-language reason + what to do.
     /// The headless install runs with `BatchMode=yes`, so a passphrase-protected key (not
     /// loaded in ssh-agent) can't be unlocked and the server reports "Permission denied".
     public static func installFailureHint(_ output: String) -> String {
         let o = output.lowercased()
+        if o.contains("does not provide shell access") || o.contains("welcome to gitlab") {
+            return "That's a git host — its key is added on the web, not with ssh-copy-id. "
+                + "Use “Set up a host → Git host” instead."
+        }
         if o.contains("permission denied") {
             return "Your existing key couldn't be used automatically — most likely it needs a "
                 + "passphrase (and isn't loaded in ssh-agent), which the non-interactive install "

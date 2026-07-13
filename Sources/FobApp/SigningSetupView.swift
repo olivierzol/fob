@@ -56,8 +56,12 @@ struct SigningSetupView: View {
         .toggleStyle(.checkbox)
 
         step(1, "Register the public key on your git host as a Signing Key",
-             "e.g. GitHub / GitLab → Settings → SSH keys (a separate entry from an Authentication key):")
+             "Key type: **Signing Key** — a separate entry from an Authentication key (GitHub keeps the two apart; on GitLab one key can be marked for both).")
         copyBox(info.pubLine, id: "pub")
+        if let host = state.signingSetupHost, let url = HostSetup.sshKeySettingsURL(forHost: host) {
+            Button("Open \(HostSetup.gitProvider(forHost: host).displayName) SSH keys") { state.openSettings(url) }
+                .font(.callout)
+        }
 
         step(2, "Configure git to sign with this key", nil)
         Picker("Scope", selection: $scope) {

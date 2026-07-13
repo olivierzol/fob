@@ -61,7 +61,16 @@ struct MigrateView: View {
     private func serverRow(_ s: AppState.MigrationCandidate) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(s.alias).font(.callout.weight(.semibold))
+                HStack(spacing: 6) {
+                    Text(s.alias).font(.callout.weight(.semibold))
+                    if s.isGitHost {
+                        Text(s.provider.displayName.uppercased())
+                            .font(.system(size: 9, weight: .semibold)).tracking(0.4)
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.15)))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
                 Text(s.destination).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }
             Spacer()
