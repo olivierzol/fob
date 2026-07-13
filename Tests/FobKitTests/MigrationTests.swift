@@ -190,6 +190,33 @@ final class MigrationTests: XCTestCase {
             .contains("-p 2222"))
     }
 
+    // MARK: - HostResolver alias disambiguation (multi-account same-host)
+
+    func testConfigAliasPrefersKeyNameWhenSameHost() {
+        let config = """
+        Host github-feedly
+          HostName github.com
+          User git
+        Host github-ousson
+          HostName github.com
+          User git
+        """
+        // Without a hint, first block wins (ssh's own default).
+        XCTAssertEqual(HostResolver.configAlias(inConfig: config, forHostName: "github.com", preferredAlias: nil),
+                       "github-feedly")
+        // With the signing key's name, the matching alias wins.
+        XCTAssertEqual(HostResolver.configAlias(inConfig: config, forHostName: "github.com", preferredAlias: "github-ousson"),
+                       "github-ousson")
+        // A preferred alias that isn't a match falls back to first.
+        XCTAssertEqual(HostResolver.configAlias(inConfig: config, forHostName: "github.com", preferredAlias: "nope"),
+                       "github-feedly")
+    }
+
+    func testConfigAliasNoMatch() {
+        XCTAssertNil(HostResolver.configAlias(inConfig: "Host x\n  HostName a.com\n",
+                                              forHostName: "b.com", preferredAlias: "x"))
+    }
+
     // MARK: - git hosts
 
     func testIsGitHost() {

@@ -17,8 +17,13 @@ struct SessionBinding {
     let verified: Bool
 
     /// "alias (hostname)" via known_hosts + ssh config, or a key fingerprint.
-    var destination: String {
-        let name = HostResolver.name(forHostKeyBlob: hostKeyBlob) ?? fingerprint
+    var destination: String { destination(preferredAlias: nil) }
+
+    /// `preferredAlias` disambiguates when several `Host` blocks share one HostName
+    /// (e.g. github-work / github-personal both → github.com): the alias matching the
+    /// signing key's name wins, so attribution names the right account.
+    func destination(preferredAlias: String?) -> String {
+        let name = HostResolver.name(forHostKeyBlob: hostKeyBlob, preferredAlias: preferredAlias) ?? fingerprint
         return verified ? name : "\(name) (unverified)"
     }
 
@@ -57,9 +62,9 @@ struct SessionBinding {
     }
 
     /// Human description of a connection's binding chain for prompts/notifications.
-    static func describe(_ bindings: [SessionBinding]) -> String {
+    static func describe(_ bindings: [SessionBinding], preferredAlias: String? = nil) -> String {
         guard !bindings.isEmpty else { return "an UNKNOWN destination" }
-        return bindings.map(\.destination).joined(separator: " → ")
+        return bindings.map { $0.destination(preferredAlias: preferredAlias) }.joined(separator: " → ")
     }
 }
 
@@ -160,9 +165,9 @@ enum HostKeySignature {
 /// Maps a host-key blob back to a human-readable name using ~/.ssh/known_hosts,
 /// then upgrades it to the user's ssh-config alias when one points at that host.
 public enum HostResolver {
-    public static func name(forHostKeyBlob blob: Data) -> String? {
+    public static func name(forHostKeyBlob blob: Data, preferredAlias: String? = nil) -> String? {
         guard let hostname = knownHostsName(forHostKeyBlob: blob) else { return nil }
-        if let alias = configAlias(forHostName: hostname), alias != hostname {
+        if let alias = configAlias(forHostName: hostname, preferredAlias: preferredAlias), alias != hostname {
             return "\(alias) (\(hostname))"
         }
         return hostname
@@ -187,10 +192,19 @@ public enum HostResolver {
         return nil
     }
 
-    private static func configAlias(forHostName hostname: String) -> String? {
+    private static func configAlias(forHostName hostname: String, preferredAlias: String?) -> String? {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".ssh/config")
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return configAlias(inConfig: contents, forHostName: hostname, preferredAlias: preferredAlias)
+    }
+
+    /// Pure config parse (testable): all aliases whose `Host` block resolves to `hostname`,
+    /// preferring `preferredAlias` when several match (multiple accounts on one host), else
+    /// the first — matching ssh's own "first block wins" default.
+    static func configAlias(inConfig contents: String, forHostName hostname: String,
+                            preferredAlias: String?) -> String? {
+        var matches: [String] = []
         var currentAliases: [String] = []
         for rawLine in contents.split(separator: "\n") {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -201,11 +215,10 @@ public enum HostResolver {
                     .filter { !$0.contains("*") && !$0.contains("?") }
             } else if lowered.hasPrefix("hostname ") || lowered.hasPrefix("hostname\t") {
                 let value = line.dropFirst("hostname".count).trimmingCharacters(in: .whitespaces)
-                if value == hostname, let alias = currentAliases.first {
-                    return alias
-                }
+                if value == hostname { matches.append(contentsOf: currentAliases) }
             }
         }
-        return nil
+        if let preferredAlias, matches.contains(preferredAlias) { return preferredAlias }
+        return matches.first
     }
 }
