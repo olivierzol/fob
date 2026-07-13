@@ -545,6 +545,32 @@ final class AppState: ObservableObject {
 
     // MARK: - Commit signing (the "Commit signing" window)
 
+    /// A git identity fob can write signing config into: a `~/.gitconfig` include
+    /// (from an `includeIf` block — the multi-account case), the global config, or the
+    /// current repo (copy-only — the window has no repo context).
+    enum SigningScope: Hashable {
+        case repository            // git config --local (shown as commands to run in the repo)
+        case identity(GitIdentity) // git config --file <include path>
+        case global                // git config --global
+
+        /// git-config location flag(s) — the args between `git config` and the key/value.
+        var flag: [String] {
+            switch self {
+            case .repository: return ["--local"]
+            case .identity(let id): return ["--file", id.path]
+            case .global: return ["--global"]
+            }
+        }
+    }
+
+    /// A per-identity include discovered in `~/.gitconfig` (via an `includeIf` block).
+    struct GitIdentity: Identifiable, Hashable {
+        let path: String            // expanded absolute path to the include file
+        let conditionLabel: String  // e.g. "gitdir:~/src/perso/"
+        let email: String?          // that file's user.email, for a friendly label
+        var id: String { path }
+    }
+
     struct SigningInfo {
         let name: String
         let pubLine: String            // add to the git host as a Signing Key
@@ -552,18 +578,17 @@ final class AppState: ObservableObject {
         let signerProgram: String      // ~/.fob/bin/fob-sign (git's gpg.ssh.program)
         let gitOnly: Bool              // policy currently restricts signing to "git"
 
-        /// The git config commands for a scope ("--global" or "--local"). The view
-        /// builds these so it can switch scope without re-reading the key. Uses a
-        /// `gpg.ssh.program` wrapper so only git signing reaches fob — SSH_AUTH_SOCK
-        /// (and any other ssh agent the user runs) is left completely alone.
-        func gitConfigCommands(global: Bool) -> [String] {
-            let scope = global ? "--global" : "--local"
+        /// The git config commands for a scope. The view builds these so it can switch
+        /// scope without re-reading the key. Uses a `gpg.ssh.program` wrapper so only git
+        /// signing reaches fob — SSH_AUTH_SOCK (and any other ssh agent) is left alone.
+        func gitConfigCommands(scope: SigningScope) -> [String] {
+            let flag = scope.flag.joined(separator: " ")
             return [
-                "git config \(scope) gpg.format ssh",
-                "git config \(scope) user.signingkey \(pubPath)",
-                "git config \(scope) gpg.ssh.program \(signerProgram)",
-                "git config \(scope) commit.gpgsign true",
-                "git config \(scope) tag.gpgsign true",
+                "git config \(flag) gpg.format ssh",
+                "git config \(flag) user.signingkey \(pubPath)",
+                "git config \(flag) gpg.ssh.program \(signerProgram)",
+                "git config \(flag) commit.gpgsign true",
+                "git config \(flag) tag.gpgsign true",
             ]
         }
     }
@@ -597,13 +622,17 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Run the `git config --global` signing setup for the user. nil = success.
-    func configureGitSigning(pubPath: String, signerProgram: String) -> String? {
-        for args in [["config", "--global", "gpg.format", "ssh"],
-                     ["config", "--global", "user.signingkey", pubPath],
-                     ["config", "--global", "gpg.ssh.program", signerProgram],
-                     ["config", "--global", "commit.gpgsign", "true"],
-                     ["config", "--global", "tag.gpgsign", "true"]] {
+    /// Write the signing config to `scope` (global, or a specific include file for a
+    /// multi-account identity). nil = success. `.repository` is not applied here — the
+    /// window has no repo context, so those are shown as copy commands.
+    func configureGitSigning(pubPath: String, signerProgram: String, scope: SigningScope) -> String? {
+        let settings = [["gpg.format", "ssh"],
+                        ["user.signingkey", pubPath],
+                        ["gpg.ssh.program", signerProgram],
+                        ["commit.gpgsign", "true"],
+                        ["tag.gpgsign", "true"]]
+        for kv in settings {
+            let args = ["config"] + scope.flag + kv
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             process.arguments = args
@@ -615,6 +644,49 @@ final class AppState: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Whether `scope` already signs with this key (so the window can say "already set"
+    /// instead of implying action). True when its user.signingkey is this pubkey and
+    /// commit.gpgsign is on.
+    func signingConfigured(pubPath: String, scope: SigningScope) -> Bool {
+        let key = runGitSync(["config"] + scope.flag + ["user.signingkey"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sign = runGitSync(["config"] + scope.flag + ["commit.gpgsign"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return key == pubPath && sign == "true"
+    }
+
+    /// The per-identity `includeIf` files in ~/.gitconfig, so the signing window can offer
+    /// each git identity as a target instead of only clobbering `--global`.
+    func discoverGitIdentities() -> [GitIdentity] {
+        let output = runGitSync(["config", "--global", "--get-regexp", "^includeif\\."])
+        return GitConfig.parseIncludeEntries(output).map { entry in
+            let path = (entry.path as NSString).expandingTildeInPath
+            let email = runGitSync(["config", "--file", path, "user.email"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return GitIdentity(path: path, conditionLabel: entry.condition,
+                               email: email.isEmpty ? nil : email)
+        }
+    }
+
+    /// Run git synchronously and return stdout (empty on failure). Only used for fast,
+    /// local `git config` reads from the main actor.
+    private func runGitSync(_ args: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(decoding: data, as: UTF8.self)
+        } catch {
+            return ""
+        }
     }
 
     func unpin(name: String) {

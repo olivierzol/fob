@@ -100,6 +100,20 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+/// Raw output of `git config --global --get-regexp '^includeif\.'` ("" on failure).
+func gitIncludeRegexp() -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["config", "--global", "--get-regexp", "^includeif\\."]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = Pipe()
+    guard (try? process.run()) != nil else { return "" }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: data, as: UTF8.self)
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 do {
@@ -246,6 +260,20 @@ do {
         print("")
         print("   The gpg.ssh.program wrapper routes ONLY git signing to fob's agent, so")
         print("   SSH_AUTH_SOCK is untouched — other ssh agents and `git push` still work.")
+        let includes = GitConfig.parseIncludeEntries(gitIncludeRegexp())
+        if !includes.isEmpty {
+            print("")
+            print("   ⚠︎ You have multiple git identities (includeIf) — do NOT use --global; it")
+            print("   would sign every account with this key. Write into the matching identity:")
+            for inc in includes {
+                let path = (inc.path as NSString).expandingTildeInPath
+                print("     # \(inc.condition)")
+                print("     git config --file \(path) gpg.format ssh")
+                print("     git config --file \(path) user.signingkey \(pubURL.path)")
+                print("     git config --file \(path) gpg.ssh.program \(signer)")
+                print("     git config --file \(path) commit.gpgsign true")
+            }
+        }
         print("")
         print("2. Register the key on your git host as a SIGNING key (a separate entry from")
         print("   an Authentication key) — e.g. GitHub or GitLab → Settings → SSH keys:")

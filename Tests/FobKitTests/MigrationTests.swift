@@ -329,6 +329,27 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(info.signingKey, "~/.ssh/id_ed25519.pub")
     }
 
+    func testParseIncludeEntries() {
+        let out = """
+        includeif.gitdir:~/src/perso/.path ~/.gitconfig-perso
+        includeif.gitdir/i:~/Work/.path /Users/me/.gitconfig-work
+        """
+        let entries = GitConfig.parseIncludeEntries(out)
+        XCTAssertEqual(entries, [
+            .init(condition: "gitdir:~/src/perso/", path: "~/.gitconfig-perso"),
+            .init(condition: "gitdir/i:~/Work/", path: "/Users/me/.gitconfig-work"),
+        ])
+    }
+
+    func testParseIncludeEntriesEdgeCases() {
+        // A gitdir that itself contains ".path" must only lose the trailing ".path".
+        let entries = GitConfig.parseIncludeEntries("includeif.gitdir:~/x.path/.path ~/.gitconfig-x")
+        XCTAssertEqual(entries, [.init(condition: "gitdir:~/x.path/", path: "~/.gitconfig-x")])
+        // Non-include lines and empties are ignored.
+        XCTAssertTrue(GitConfig.parseIncludeEntries("").isEmpty)
+        XCTAssertTrue(GitConfig.parseIncludeEntries("user.email me@example.com").isEmpty)
+    }
+
     func testGitConfigEmpty() {
         let info = GitConfig.parse("[core]\n  editor = vim\n")
         XCTAssertNil(info.format)
