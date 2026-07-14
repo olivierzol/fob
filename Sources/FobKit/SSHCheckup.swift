@@ -89,11 +89,124 @@ public enum SSHCheckup {
         return contents[b.upperBound..<e.lowerBound].split(whereSeparator: \.isNewline).joined()
     }
 
+    // MARK: - Unencrypted on-disk key
+
+    /// Is `keyPath` still referenced by an active `IdentityFile` in ssh config, or by the
+    /// git signing key? Matched by exact filename (so `id_ed25519` ≠ `id_ed25519_perso`).
+    public static func isKeyReferenced(keyPath: String, configText: String, gitSigningKey: String?) -> Bool {
+        // Compare by filename, ignoring a `.pub` suffix so a private key matches its
+        // public-key reference (a signing key or IdentityFile is usually the `.pub`).
+        func norm(_ p: String) -> String {
+            let b = (p as NSString).lastPathComponent
+            return b.hasSuffix(".pub") ? String(b.dropLast(4)) : b
+        }
+        let base = norm(keyPath)
+        if let s = gitSigningKey, norm(s) == base { return true }
+        for raw in configText.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            guard line.lowercased().hasPrefix("identityfile") else { continue }
+            let value = line.dropFirst("identityfile".count)
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \t=\""))
+            if norm(value) == base { return true }
+        }
+        return false
+    }
+
+    /// Finding for an unencrypted on-disk private key. If nothing references it, steer the
+    /// user to delete it (they've likely migrated off it); otherwise, to protect it.
+    public static func unencryptedKeyFinding(name: String, path: String, referenced: Bool) -> Finding {
+        if referenced {
+            return Finding(severity: .high, category: "Key", title: "“\(name)” has no passphrase",
+                detail: "This private key is stored unencrypted — anyone who reads the file (a backup, a stolen laptop, malware running as you) gets a working key. Add a passphrase, or move the hosts that use it to a fob key (Secure Enclave keys can't be copied off the machine).",
+                fix: .command("ssh-keygen -p -f \(path)"))
+        }
+        return Finding(severity: .high, category: "Key", title: "“\(name)” is unencrypted and unused",
+            detail: "This private key is stored unencrypted and no ~/.ssh/config host or your git signing config references it — you've likely migrated off it to fob. Delete it, and remove it from any account/server that still trusts it.",
+            fix: .command("rm \(path) \(path).pub"))
+    }
+
+    // MARK: - allowed_signers (local commit-signature verification)
+
+    /// Build/inspect `~/.ssh/allowed_signers` entries. Format: `<principals> [options]
+    /// <keytype> <base64> [comment]`. fob writes `<email> namespaces="git" <pubLine>`.
+    public enum AllowedSigners {
+        /// "<keytype> <base64>" from a public-key line, for presence checks.
+        public static func keyFields(_ pubLine: String) -> String? {
+            let parts = pubLine.split(separator: " ")
+            guard parts.count >= 2 else { return nil }
+            return "\(parts[0]) \(parts[1])"
+        }
+
+        public static func contains(_ fileText: String, pubLine: String) -> Bool {
+            guard let kf = keyFields(pubLine) else { return false }
+            return fileText.contains(kf)
+        }
+
+        public static func entry(email: String, pubLine: String) -> String {
+            "\(email) namespaces=\"git\" \(pubLine)"
+        }
+
+        /// Append an entry for this key/email if not already present; nil = already there.
+        public static func appending(_ fileText: String, email: String, pubLine: String) -> String? {
+            guard !contains(fileText, pubLine: pubLine) else { return nil }
+            let sep = fileText.isEmpty || fileText.hasSuffix("\n") ? "" : "\n"
+            return fileText + sep + entry(email: email, pubLine: pubLine) + "\n"
+        }
+    }
+
+    /// Flag when fob-signed commits can't be verified LOCALLY (GitHub's Verified is
+    /// separate). Either the allowed_signers file isn't configured, or the key isn't in it.
+    public static func signingVerificationFinding(usesFobSigning: Bool,
+                                                  allowedSignersConfigured: Bool,
+                                                  keyListed: Bool) -> Finding? {
+        guard usesFobSigning else { return nil }
+        if !allowedSignersConfigured {
+            return Finding(severity: .medium, category: "Config",
+                title: "Signed commits aren't verifiable locally",
+                detail: "You sign commits with a fob key, but git's gpg.ssh.allowedSignersFile isn't set — `git log --show-signature` / `git verify-commit` can't check your own signatures (your git host still shows Verified). Point git at an allowed_signers file.",
+                fix: .command("git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers"))
+        }
+        if !keyListed {
+            return Finding(severity: .medium, category: "Config",
+                title: "Your signing key isn't in allowed_signers",
+                detail: "Your fob signing key isn't listed in allowed_signers, so `git verify-commit` shows your commits unverified locally. Re-run a key's ••• → “Use for commit signing…” — fob adds it for you.",
+                fix: .none)
+        }
+        return nil
+    }
+
     // MARK: - File permissions
 
     /// A private key readable by group or other (`mode & 0o077 != 0`) — ssh itself refuses
     /// these, and it means another local account could read the key.
     public static func isPrivateKeyPermissive(mode: Int) -> Bool { mode & 0o077 != 0 }
+
+    // MARK: - Git identity footgun (multi-account default leak)
+
+    /// With multiple `includeIf` git identities but `user.useConfigOnly` unset, any repo
+    /// outside those directories silently commits/signs as the global default identity —
+    /// the class of bug that leaks the wrong account's email into a repo. nil = safe (no
+    /// includes, or the guard is already on).
+    public static func identityFinding(includeCount: Int, useConfigOnly: Bool,
+                                       defaultEmail: String?) -> Finding? {
+        guard includeCount > 0 else { return nil }
+        let hasGlobalEmail = defaultEmail?.isEmpty == false
+        // If there's no global user.email, useConfigOnly alone is the fix (git errors when
+        // it can't find one). If a global email IS set, useConfigOnly won't help — git will
+        // keep using that email; the identity has to be relocated into an includeIf.
+        if !hasGlobalEmail {
+            guard !useConfigOnly else { return nil }
+            return Finding(severity: .medium, category: "Config",
+                title: "Repos outside your includeIf directories have no identity guard",
+                detail: "You keep \(includeCount) per-directory git \(includeCount == 1 ? "identity" : "identities"). Set user.useConfigOnly so git refuses to invent an identity for a repo outside them, instead of guessing one from your system.",
+                fix: .command("git config --global user.useConfigOnly true"))
+        }
+        return Finding(severity: .medium, category: "Config",
+            title: "Repos outside your includeIf directories commit as \(defaultEmail!)",
+            detail: "Git uses your global default identity (\(defaultEmail!)) for any repo outside your \(includeCount) includeIf \(includeCount == 1 ? "directory" : "directories") — a clone in /tmp or ~/Downloads would commit (and sign) as the wrong account. Fix in two steps: move your default identity into its own includeIf (e.g. gitdir:~/work/), THEN set user.useConfigOnly=true — so a repo matching no include has no identity and git errors instead of defaulting. (Setting useConfigOnly alone won't help while a global user.email is set.)",
+            fix: .command("git config --global user.useConfigOnly true"))
+    }
 
     // MARK: - Risky ~/.ssh/config directives
 

@@ -34,6 +34,8 @@ final class AppState: ObservableObject {
     @Published var signingSetupHost: String?
     /// The alias the "Migrate a server" window is set up for (set before opening it).
     @Published var migrateAlias: String?
+    /// Bumped after any ~/.ssh/config write so open lists (e.g. Migrate) refresh live.
+    @Published var configRevision = 0
 
     private let store: KeyStore?
     private var agent: Agent?
@@ -96,8 +98,10 @@ final class AppState: ObservableObject {
         let all = (try? store.all()) ?? []
         keys = all.map { key in
             let policy = store.policy(name: key.name)
+            // Prefer the alias matching the key name so a key pinned to a shared HostName
+            // (github-ousson / github-feedly both → github.com) shows its own alias.
             let names = policy.pinnedHostKeys.map {
-                HostResolver.name(forHostKeyBlob: $0) ?? "unknown host key"
+                HostResolver.name(forHostKeyBlob: $0, preferredAlias: key.name) ?? "unknown host key"
             }
             return KeyInfo(name: key.name,
                            pinnedNames: Array(Set(names)).sorted(),
@@ -213,6 +217,7 @@ final class AppState: ObservableObject {
                 configAdded = true
             }
             refreshKeys()
+            if configAdded { configRevision += 1 }
             var copy = ["ssh-copy-id", "-f", "-i", pubURL.path]
             if port != 22 { copy += ["-p", String(port)] }
             copy.append("\(user)@\(host)")
@@ -377,6 +382,7 @@ final class AppState: ObservableObject {
         }
         do {
             let backup = try HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
+            configRevision += 1
             return .ok(backup: backup.lastPathComponent)
         } catch {
             return .error(error.localizedDescription)
@@ -436,6 +442,7 @@ final class AppState: ObservableObject {
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sshConfigURL.path)
             }
             refreshKeys()
+            configRevision += 1
             return nil
         } catch {
             return error.localizedDescription
@@ -508,6 +515,7 @@ final class AppState: ObservableObject {
         }
         do {
             let backup = try HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
+            configRevision += 1
             return .ok(backup: backup.lastPathComponent)
         } catch {
             return .error(error.localizedDescription)
@@ -546,10 +554,10 @@ final class AppState: ObservableObject {
                   let info = SSHCheckup.parsePrivateKey(contents) else { continue }
 
             if !info.isEncrypted {
-                findings.append(.init(severity: .high, category: "Key",
-                    title: "“\(name)” has no passphrase",
-                    detail: "This private key is stored unencrypted — anyone who reads the file (a backup, a stolen laptop, malware running as you) gets a working key. Add a passphrase, or move the hosts that use it to a fob key (Secure Enclave keys can't be copied off the machine).",
-                    fix: .command("ssh-keygen -p -f \(url.path)")))
+                let cfg = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+                let referenced = SSHCheckup.isKeyReferenced(
+                    keyPath: url.path, configText: cfg, gitSigningKey: gitSigningInfo().signingKey)
+                findings.append(SSHCheckup.unencryptedKeyFinding(name: name, path: url.path, referenced: referenced))
             }
             if let mode = (try? fm.attributesOfItem(atPath: url.path))?[.posixPermissions] as? Int,
                SSHCheckup.isPrivateKeyPermissive(mode: mode) {
@@ -570,6 +578,17 @@ final class AppState: ObservableObject {
         let config = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
         findings += SSHCheckup.scanConfig(config)
 
+        // 2b. Multi-account git-identity footgun.
+        let identities = discoverGitIdentities()
+        let useConfigOnly = runGitSync(["config", "--global", "user.useConfigOnly"])
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+        let defaultEmail = runGitSync(["config", "--global", "user.email"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let f = SSHCheckup.identityFinding(includeCount: identities.count,
+                                              useConfigOnly: useConfigOnly, defaultEmail: defaultEmail) {
+            findings.append(f)
+        }
+
         // 3. Opportunities — hosts/signing not yet on fob (reuse existing discovery).
         for c in discoverServers() where !c.usesFob {
             let kind = c.isGitHost ? "git host" : "server"
@@ -584,6 +603,22 @@ final class AppState: ObservableObject {
                 title: "Commit signing uses a non-fob key",
                 detail: "Your git signing key isn't a fob key. Move it so commit signatures are Touch ID-gated.",
                 fix: .signing))
+        }
+
+        // 3b. fob signing set up, but can it be verified locally?
+        if signing.usesFob {
+            let asFile = runGitSync(["config", "--global", "gpg.ssh.allowedSignersFile"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            var keyListed = false
+            if !asFile.isEmpty, let sk = signing.signingKey {
+                let asText = (try? String(contentsOfFile: (asFile as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
+                let pub = (try? String(contentsOfFile: (sk as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
+                keyListed = SSHCheckup.AllowedSigners.contains(asText, pubLine: pub)
+            }
+            if let f = SSHCheckup.signingVerificationFinding(
+                usesFobSigning: true, allowedSignersConfigured: !asFile.isEmpty, keyListed: keyListed) {
+                findings.append(f)
+            }
         }
 
         return CheckupReport(findings: findings.sorted { $0.severity < $1.severity })
@@ -683,6 +718,7 @@ final class AppState: ObservableObject {
                 "git config \(flag) gpg.ssh.program \(signerProgram)",
                 "git config \(flag) commit.gpgsign true",
                 "git config \(flag) tag.gpgsign true",
+                "git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers",
             ]
         }
     }
@@ -719,14 +755,22 @@ final class AppState: ObservableObject {
     /// Write the signing config to `scope` (global, or a specific include file for a
     /// multi-account identity). nil = success. `.repository` is not applied here — the
     /// window has no repo context, so those are shown as copy commands.
-    func configureGitSigning(pubPath: String, signerProgram: String, scope: SigningScope) -> String? {
-        let settings = [["gpg.format", "ssh"],
-                        ["user.signingkey", pubPath],
-                        ["gpg.ssh.program", signerProgram],
-                        ["commit.gpgsign", "true"],
-                        ["tag.gpgsign", "true"]]
-        for kv in settings {
-            let args = ["config"] + scope.flag + kv
+    func configureGitSigning(pubPath: String, signerProgram: String, pubLine: String, scope: SigningScope) -> String? {
+        let signersPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".ssh/allowed_signers").path
+        // Signing itself is scoped (so multi-account setups don't clobber each other);
+        // the allow-list pointer is a harmless shared path, set globally so verification
+        // works in every repo, not just this identity's directories.
+        let writes: [[String]] = [
+            scope.flag + ["gpg.format", "ssh"],
+            scope.flag + ["user.signingkey", pubPath],
+            scope.flag + ["gpg.ssh.program", signerProgram],
+            scope.flag + ["commit.gpgsign", "true"],
+            scope.flag + ["tag.gpgsign", "true"],
+            ["--global", "gpg.ssh.allowedSignersFile", signersPath],
+        ]
+        for kv in writes {
+            let args = ["config"] + kv
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             process.arguments = args
@@ -737,7 +781,26 @@ final class AppState: ObservableObject {
                 return error.localizedDescription
             }
         }
+        // Add the key to allowed_signers so `git verify-commit` works locally.
+        if let email = signingEmail(for: scope) { addAllowedSigner(email: email, pubLine: pubLine) }
         return nil
+    }
+
+    /// The committer email a signature under `scope` will carry — the include identity's
+    /// email, else the global user.email.
+    private func signingEmail(for scope: SigningScope) -> String? {
+        if case .identity(let id) = scope, let e = id.email { return e }
+        let e = runGitSync(["config", "--global", "user.email"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return e.isEmpty ? nil : e
+    }
+
+    /// Append an entry to ~/.ssh/allowed_signers (idempotent) so signed commits verify locally.
+    private func addAllowedSigner(email: String, pubLine: String) {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/allowed_signers")
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        guard let updated = SSHCheckup.AllowedSigners.appending(text, email: email, pubLine: pubLine) else { return }
+        try? Data(updated.utf8).write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
     }
 
     /// Whether `scope` already signs with this key (so the window can say "already set"
@@ -825,12 +888,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Map a `~/.ssh/config` alias (e.g. "github-ousson") to its real HostName + Port for
+    /// a known_hosts lookup. known_hosts is keyed by hostname (github.com), not the alias.
+    /// Returns the token unchanged if it isn't a config alias.
+    private func resolveKnownHost(_ token: String) -> (host: String, port: Int?) {
+        let config = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        if let parsed = HostSetup.parseHostBlock(alias: token, in: config), let hostName = parsed.hostName {
+            return (hostName, parsed.port)
+        }
+        return (token, nil)
+    }
+
     func pin(name: String, toHost host: String) {
+        let (resolved, port) = resolveKnownHost(host)
         run { store in
-            let hostKeys = HostResolver.knownHostKeys(for: host)
+            let hostKeys = HostResolver.knownHostKeys(for: resolved, port: port)
             guard !hostKeys.isEmpty else {
                 throw ActionError.message(
-                    "No host key for “\(host)” in ~/.ssh/known_hosts yet.\n\n"
+                    "No host key for “\(resolved)” in ~/.ssh/known_hosts yet.\n\n"
                     + "Pinning binds this key to the host’s public key, so the host "
                     + "must be known first. Connect to it once — e.g. `ssh \(host)` "
                     + "and accept the prompt — or run `fob setup \(host)`. Then pin again.")

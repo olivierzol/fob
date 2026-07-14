@@ -71,6 +71,68 @@ final class CheckupTests: XCTestCase {
         XCTAssertTrue(SSHCheckup.isPrivateKeyPermissive(mode: 0o660))
     }
 
+    // MARK: - isKeyReferenced / unencryptedKeyFinding
+
+    func testIsKeyReferenced() {
+        let config = """
+        Host a
+          IdentityFile ~/.ssh/id_ed25519_perso_ousson
+        Host b
+          # IdentityFile ~/.ssh/id_ed25519
+          IdentityFile ~/.ssh/fob_b.pub
+        """
+        // id_ed25519 is only in a COMMENTED line → not referenced (and not confused with
+        // the substring match against id_ed25519_perso_ousson).
+        XCTAssertFalse(SSHCheckup.isKeyReferenced(keyPath: "/Users/me/.ssh/id_ed25519", configText: config, gitSigningKey: nil))
+        // the perso key IS active
+        XCTAssertTrue(SSHCheckup.isKeyReferenced(keyPath: "/Users/me/.ssh/id_ed25519_perso_ousson", configText: config, gitSigningKey: nil))
+        // referenced via git signing key
+        XCTAssertTrue(SSHCheckup.isKeyReferenced(keyPath: "/Users/me/.ssh/id_ed25519", configText: "", gitSigningKey: "/Users/me/.ssh/id_ed25519.pub"))
+    }
+
+    func testUnencryptedKeyFindingWording() {
+        XCTAssertTrue(SSHCheckup.unencryptedKeyFinding(name: "k", path: "/p", referenced: true).fix == .command("ssh-keygen -p -f /p"))
+        let unused = SSHCheckup.unencryptedKeyFinding(name: "k", path: "/p", referenced: false)
+        XCTAssertTrue(unused.title.contains("unused"))
+        XCTAssertEqual(unused.fix, .command("rm /p /p.pub"))
+    }
+
+    // MARK: - identityFinding
+
+    func testIdentityFinding() {
+        // global email set → flag (useConfigOnly alone insufficient), even if useConfigOnly on
+        let f = SSHCheckup.identityFinding(includeCount: 2, useConfigOnly: false, defaultEmail: "me@work.com")
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f?.title.contains("me@work.com") == true)
+        XCTAssertTrue(f?.detail.contains("two steps") == true || f?.detail.contains("relocate") == true || f?.detail.contains("includeIf") == true)
+        // no global email + guard off → bare useConfigOnly is the fix
+        let g = SSHCheckup.identityFinding(includeCount: 2, useConfigOnly: false, defaultEmail: "")
+        XCTAssertEqual(g?.fix, .command("git config --global user.useConfigOnly true"))
+        // no global email + guard on → nil
+        XCTAssertNil(SSHCheckup.identityFinding(includeCount: 2, useConfigOnly: true, defaultEmail: ""))
+        // no includes → nil
+        XCTAssertNil(SSHCheckup.identityFinding(includeCount: 0, useConfigOnly: false, defaultEmail: "me@work.com"))
+    }
+
+    func testAllowedSigners() {
+        let pub = "ecdsa-sha2-nistp256 AAAABBBCCC fob:x"
+        XCTAssertEqual(SSHCheckup.AllowedSigners.keyFields(pub), "ecdsa-sha2-nistp256 AAAABBBCCC")
+        XCTAssertEqual(SSHCheckup.AllowedSigners.entry(email: "me@x.com", pubLine: pub),
+                       "me@x.com namespaces=\"git\" ecdsa-sha2-nistp256 AAAABBBCCC fob:x")
+        XCTAssertFalse(SSHCheckup.AllowedSigners.contains("", pubLine: pub))
+        let added = SSHCheckup.AllowedSigners.appending("", email: "me@x.com", pubLine: pub)
+        XCTAssertNotNil(added)
+        XCTAssertTrue(SSHCheckup.AllowedSigners.contains(added!, pubLine: pub))
+        XCTAssertNil(SSHCheckup.AllowedSigners.appending(added!, email: "me@x.com", pubLine: pub)) // idempotent
+    }
+
+    func testSigningVerificationFinding() {
+        XCTAssertNil(SSHCheckup.signingVerificationFinding(usesFobSigning: false, allowedSignersConfigured: false, keyListed: false))
+        XCTAssertTrue(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: false, keyListed: false)?.title.contains("verifiable") == true)
+        XCTAssertTrue(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: true, keyListed: false)?.title.contains("allowed_signers") == true)
+        XCTAssertNil(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: true, keyListed: true))
+    }
+
     // MARK: - scanConfig
 
     func testScanFlagsRiskyDirectives() {

@@ -68,7 +68,11 @@ struct MigrateHostView: View {
     @ViewBuilder
     private func content(_ c: AppState.MigrationCandidate) -> some View {
         if c.isGitHost {
-            gitHostContent(c)
+            // Re-entry to retire (fob key present AND an old key still active) skips the
+            // add-to-account dance; a fresh git host (usesFob just written by New key, no
+            // old key) still needs it.
+            if c.usesFob && !c.oldIdentityFiles.isEmpty { gitMigratedContent(c) }
+            else { gitHostContent(c) }
         } else if alreadyMigrated {
             migratedContent(c)
         } else {
@@ -176,6 +180,41 @@ struct MigrateHostView: View {
                     NSApp.activate(ignoringOtherApps: true)
                     openWindow(id: SigningSetupView.windowID)
                 }
+            }
+        }
+    }
+
+    /// Re-entry for a git host already using fob with an old key still present: retire it
+    /// directly (no add-to-account), with an optional re-verify.
+    @ViewBuilder
+    private func gitMigratedContent(_ c: AppState.MigrationCandidate) -> some View {
+        Label("“\(alias)” already uses a fob key on \(c.provider.displayName). Retire the old key whenever you're ready — it stays a fallback until you do.",
+              systemImage: "checkmark.seal.fill")
+            .font(.callout).foregroundStyle(.green).fixedSize(horizontal: false, vertical: true)
+
+        step(1, "Verify fob works (optional)") {
+            Button(busy ? "Connecting…" : "Verify \(alias)") { runVerifyGit(c) }
+                .disabled(busy)
+            if let verified {
+                Label(verified.text, systemImage: verified.ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(verified.ok ? .green : .red).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+
+        step(2, "Retire the old key") {
+            Text("Comments the old key out of `~/.ssh/config` (fob is already preferred). It stays on your \(c.provider.displayName) account until you remove it there too.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button(retired?.ok == true ? "Retired ✓" : "Retire old key") { runRetire() }
+                    .disabled(retired?.ok == true || busy).buttonStyle(.borderedProminent)
+                if let retired {
+                    Text(retired.text).font(.caption)
+                        .foregroundStyle(retired.ok ? .green : .red).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let url = c.settingsURL {
+                Button("Open \(c.provider.displayName) SSH keys (remove the old one)") { state.openSettings(url) }
+                    .font(.caption)
             }
         }
     }

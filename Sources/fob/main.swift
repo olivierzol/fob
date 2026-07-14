@@ -136,8 +136,10 @@ func sshCheckupFindings() -> [SSHCheckup.Finding] {
         guard let contents = try? String(contentsOfFile: path, encoding: .utf8),
               let info = SSHCheckup.parsePrivateKey(contents) else { continue }
         if !info.isEncrypted {
-            findings.append(.init(severity: .high, category: "Key", title: "“\(name)” has no passphrase",
-                detail: "Stored unencrypted — a copy of the file is a working key. Add a passphrase (ssh-keygen -p -f \(path)) or move its hosts to fob.", fix: .none))
+            let cfg = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
+            let gitSigning = GitConfig.parse((try? String(contentsOf: home.appendingPathComponent(".gitconfig"), encoding: .utf8)) ?? "").signingKey
+            let referenced = SSHCheckup.isKeyReferenced(keyPath: path, configText: cfg, gitSigningKey: gitSigning)
+            findings.append(SSHCheckup.unencryptedKeyFinding(name: name, path: path, referenced: referenced))
         }
         if let mode = (try? fm.attributesOfItem(atPath: path))?[.posixPermissions] as? Int,
            SSHCheckup.isPrivateKeyPermissive(mode: mode) {
@@ -157,6 +159,13 @@ func sshCheckupFindings() -> [SSHCheckup.Finding] {
     let config = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
     findings += SSHCheckup.scanConfig(config)
 
+    let includeCount = GitConfig.parseIncludeEntries(gitIncludeRegexp()).count
+    if let f = SSHCheckup.identityFinding(includeCount: includeCount,
+                                          useConfigOnly: gitConfigGlobal("user.useConfigOnly") == "true",
+                                          defaultEmail: gitConfigGlobal("user.email")) {
+        findings.append(f)
+    }
+
     for block in HostSetup.listHostBlocks(in: config) where !block.usesFob {
         findings.append(.init(severity: .opportunity, category: "Opportunity",
             title: "“\(block.alias)” still uses an on-disk key",
@@ -169,7 +178,32 @@ func sshCheckupFindings() -> [SSHCheckup.Finding] {
             title: "Commit signing uses a non-fob key",
             detail: "Set up a fob signing key:  fob sign-setup <key>", fix: .none))
     }
+    if signing.usesFob {
+        let asFile = gitConfigGlobal("gpg.ssh.allowedSignersFile")
+        var keyListed = false
+        if !asFile.isEmpty, let sk = signing.signingKey {
+            let asText = (try? String(contentsOfFile: (asFile as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
+            let pub = (try? String(contentsOfFile: (sk as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
+            keyListed = SSHCheckup.AllowedSigners.contains(asText, pubLine: pub)
+        }
+        if let f = SSHCheckup.signingVerificationFinding(
+            usesFobSigning: true, allowedSignersConfigured: !asFile.isEmpty, keyListed: keyListed) {
+            findings.append(f)
+        }
+    }
     return findings.sorted { $0.severity < $1.severity }
+}
+
+/// A single `git config --global <key>` value (trimmed; "" if unset/failure).
+func gitConfigGlobal(_ key: String) -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["config", "--global", key]
+    let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
+    guard (try? process.run()) != nil else { return "" }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 /// Raw output of `git config --global --get-regexp '^includeif\.'` ("" on failure).
@@ -371,6 +405,14 @@ do {
         print("")
         print("3. (recommended) restrict this key to git signatures only:")
         print("     fob namespaces \(name) git")
+        print("")
+        let signEmail = gitConfigGlobal("user.email").trimmingCharacters(in: .whitespacesAndNewlines)
+        let signerId = signEmail.isEmpty ? "<your-email>" : signEmail
+        print("4. (local verification) so `git verify-commit` and `git log --show-signature`")
+        print("   trust it, point git at an allow-list (safe to set globally) …")
+        print("     git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers")
+        print("   … and add this key to that file:")
+        print("     \(SSHCheckup.AllowedSigners.entry(email: signerId, pubLine: pubLine))")
         print("")
         print("Then `git commit` prompts Touch ID via fob, and your host (GitHub, GitLab,")
         print("Gitea/Forgejo, …) shows \"Verified\". It also verifies locally via allowed_signers.")
