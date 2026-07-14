@@ -344,6 +344,10 @@ struct ContentView: View {
             .padding(.horizontal, 14).padding(.vertical, 11)
             divider
             HStack {
+                footerButton("SSH checkup") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    openWindow(id: CheckupView.windowID)
+                }
                 footerButton("Reveal audit log") { state.revealAuditLog() }
                 Spacer()
                 footerButton("Quit fob") { NSApplication.shared.terminate(nil) }

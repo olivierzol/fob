@@ -514,6 +514,100 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - SSH checkup (read-only hygiene report)
+
+    struct CheckupReport {
+        let findings: [SSHCheckup.Finding]
+        var high: Int { findings.filter { $0.severity == .high }.count }
+        var medium: Int { findings.filter { $0.severity == .medium }.count }
+        var low: Int { findings.filter { $0.severity == .low }.count }
+        var opportunities: Int { findings.filter { $0.severity == .opportunity }.count }
+        var isClean: Bool { findings.allSatisfy { $0.severity == .opportunity } }
+    }
+
+    /// Scan ~/.ssh read-only and return findings, most severe first. Reads private-key
+    /// files (encryption, permissions, type/bits), lints ~/.ssh/config, and surfaces
+    /// migrate/signing opportunities from the existing discovery. Never writes anything.
+    func runCheckup() async -> CheckupReport {
+        var findings: [SSHCheckup.Finding] = []
+        let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+        let fm = FileManager.default
+
+        // 1. On-disk private keys.
+        let skipExact: Set<String> = ["config", "known_hosts", "authorized_keys", "agent.sock"]
+        let entries = (try? fm.contentsOfDirectory(atPath: sshDir.path)) ?? []
+        for name in entries.sorted() {
+            if name.hasSuffix(".pub") || name.hasPrefix("config.") || name.hasPrefix("known_hosts")
+                || skipExact.contains(name) || name.hasPrefix(".") { continue }
+            let url = sshDir.appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue,
+                  let contents = try? String(contentsOf: url, encoding: .utf8),
+                  let info = SSHCheckup.parsePrivateKey(contents) else { continue }
+
+            if !info.isEncrypted {
+                findings.append(.init(severity: .high, category: "Key",
+                    title: "“\(name)” has no passphrase",
+                    detail: "This private key is stored unencrypted — anyone who reads the file (a backup, a stolen laptop, malware running as you) gets a working key. Add a passphrase, or move the hosts that use it to a fob key (Secure Enclave keys can't be copied off the machine).",
+                    fix: .command("ssh-keygen -p -f \(url.path)")))
+            }
+            if let mode = (try? fm.attributesOfItem(atPath: url.path))?[.posixPermissions] as? Int,
+               SSHCheckup.isPrivateKeyPermissive(mode: mode) {
+                findings.append(.init(severity: .high, category: "Key",
+                    title: "“\(name)” is readable by other accounts",
+                    detail: "Mode \(String(mode, radix: 8)) — private keys must be owner-only. ssh will often refuse it too.",
+                    fix: .command("chmod 600 \(url.path)")))
+            }
+            if let (type, bits) = await sshKeyTypeBits(url), isWeakKey(type: type, bits: bits) {
+                findings.append(.init(severity: .medium, category: "Key",
+                    title: "“\(name)” is a weak/deprecated key (\(type)\(bits.map { " \($0)" } ?? ""))",
+                    detail: "Prefer Ed25519 (or a fob Secure Enclave key). DSA is disabled by modern OpenSSH; RSA under 3072 bits is weak.",
+                    fix: .none))
+            }
+        }
+
+        // 2. Risky ~/.ssh/config directives.
+        let config = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
+        findings += SSHCheckup.scanConfig(config)
+
+        // 3. Opportunities — hosts/signing not yet on fob (reuse existing discovery).
+        for c in discoverServers() where !c.usesFob {
+            let kind = c.isGitHost ? "git host" : "server"
+            findings.append(.init(severity: .opportunity, category: "Opportunity",
+                title: "“\(c.alias)” still uses an on-disk key",
+                detail: "This \(kind) authenticates with a plain key. Migrate it to a Touch ID-gated fob key.",
+                fix: .migrate(alias: c.alias)))
+        }
+        let signing = gitSigningInfo()
+        if (signing.signingKey != nil || signing.format != nil), !signing.usesFob {
+            findings.append(.init(severity: .opportunity, category: "Opportunity",
+                title: "Commit signing uses a non-fob key",
+                detail: "Your git signing key isn't a fob key. Move it so commit signatures are Touch ID-gated.",
+                fix: .signing))
+        }
+
+        return CheckupReport(findings: findings.sorted { $0.severity < $1.severity })
+    }
+
+    /// `(type, bits)` from `ssh-keygen -l -f <key>` — reads the public half, no passphrase.
+    private func sshKeyTypeBits(_ url: URL) async -> (type: String, bits: Int?)? {
+        let (status, out) = await runProcess("/usr/bin/ssh-keygen", ["-l", "-f", url.path])
+        guard status == 0 else { return nil }
+        // "256 SHA256:… comment (ED25519)"
+        let bits = out.split(separator: " ").first.flatMap { Int($0) }
+        guard let open = out.lastIndex(of: "("), let close = out.lastIndex(of: ")"), open < close else {
+            return nil
+        }
+        return (String(out[out.index(after: open)..<close]), bits)
+    }
+
+    private func isWeakKey(type: String, bits: Int?) -> Bool {
+        let t = type.uppercased()
+        if t.contains("DSA") { return true }               // ssh-dss / DSA — deprecated
+        if t.contains("RSA"), let bits, bits < 3072 { return true }
+        return false
+    }
+
     /// Run a subprocess off the main actor, feeding `stdin` if given, capturing merged
     /// stdout+stderr. `/usr/bin/ssh` bounds itself via BatchMode + ConnectTimeout.
     private func runProcess(_ launchPath: String, _ args: [String], stdin: String? = nil) async -> (status: Int32, output: String) {
