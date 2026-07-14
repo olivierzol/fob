@@ -14,27 +14,27 @@ struct FobApp: App {
         .menuBarExtraStyle(.window)
 
         Window("New key", id: HostSetupView.windowID) {
-            HostSetupView().environmentObject(state)
+            HostSetupView().environmentObject(state).followsActiveSpace()
         }
         .windowResizability(.contentSize)
 
         Window("Commit signing", id: SigningSetupView.windowID) {
-            SigningSetupView().environmentObject(state)
+            SigningSetupView().environmentObject(state).followsActiveSpace()
         }
         .windowResizability(.contentSize)
 
         Window("Migrate to fob", id: MigrateView.windowID) {
-            MigrateView().environmentObject(state)
+            MigrateView().environmentObject(state).followsActiveSpace()
         }
         .windowResizability(.contentSize)
 
         Window("Migrate a server", id: MigrateHostView.windowID) {
-            MigrateHostView().environmentObject(state)
+            MigrateHostView().environmentObject(state).followsActiveSpace()
         }
         .windowResizability(.contentSize)
 
         Window("SSH checkup", id: CheckupView.windowID) {
-            CheckupView().environmentObject(state)
+            CheckupView().environmentObject(state).followsActiveSpace()
         }
         .windowResizability(.contentMinSize)
     }

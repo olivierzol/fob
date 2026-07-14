@@ -189,8 +189,14 @@ struct ContentView: View {
 
     private var newKeySection: some View {
         HStack(spacing: 18) {
-            linkButton("plus", "New key…") { openWindow(id: HostSetupView.windowID) }
-            linkButton("arrow.right.arrow.left", "Migrate…") { openWindow(id: MigrateView.windowID) }
+            linkButton("plus", "New key…") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: HostSetupView.windowID)
+            }
+            linkButton("arrow.right.arrow.left", "Migrate…") {
+                NSApp.activate(ignoringOtherApps: true)
+                openWindow(id: MigrateView.windowID)
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
     }
