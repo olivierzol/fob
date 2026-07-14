@@ -31,6 +31,12 @@ public enum HostSetup {
         !s.isEmpty && !s.contains(" ") && !s.hasPrefix("-")
     }
 
+    /// POSIX single-quote a string so a shell treats it as one literal argument, safe to
+    /// interpolate into a command line that will actually be executed (e.g. Terminal).
+    public static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     /// What we read out of an existing `~/.ssh/config` Host block, for `fob adopt`.
     public struct ParsedHost: Equatable {
         public var hostName: String?
@@ -263,9 +269,12 @@ public enum HostSetup {
     public static func fallbackCopyCommand(alias: String, fobPubPath: String, port: Int) -> String {
         // -f is required: fob keys have no private file on disk (it's in the enclave),
         // and without -f ssh-copy-id tries to derive from a private key it can't find.
-        var parts = ["ssh-copy-id", "-f", "-i", fobPubPath]
+        // alias/path are SINGLE-QUOTED: this command is both copy-pasted and run in a real
+        // shell (the app's "Open in Terminal"), so metacharacters in an alias read from
+        // ~/.ssh/config must be inert, not interpreted.
+        var parts = ["ssh-copy-id", "-f", "-i", shellQuote(fobPubPath)]
         if port != 22 { parts += ["-p", String(port)] }
-        parts.append(alias)
+        parts.append(shellQuote(alias))
         return parts.joined(separator: " ")
     }
 
