@@ -185,9 +185,20 @@ final class MigrationTests: XCTestCase {
 
     func testFallbackCommandPort() {
         XCTAssertEqual(HostSetup.fallbackCopyCommand(alias: "web", fobPubPath: pub, port: 22),
-                       "ssh-copy-id -f -i \(pub) web")
+                       "ssh-copy-id -f -i '\(pub)' 'web'")
         XCTAssertTrue(HostSetup.fallbackCopyCommand(alias: "web", fobPubPath: pub, port: 2222)
             .contains("-p 2222"))
+    }
+
+    // The fallback command is executed in a real shell ("Open in Terminal"), so a
+    // metacharacter-laden alias from ~/.ssh/config must be single-quoted, not injected.
+    func testFallbackCommandNeutralizesShellMetacharacters() {
+        let evil = "web; touch /tmp/pwned"
+        let cmd = HostSetup.fallbackCopyCommand(alias: evil, fobPubPath: pub, port: 22)
+        XCTAssertTrue(cmd.hasSuffix("'web; touch /tmp/pwned'"))
+        XCTAssertFalse(cmd.contains("; touch /tmp/pwned'\n"))
+        // A single quote in the alias is escaped, not a breakout.
+        XCTAssertEqual(HostSetup.shellQuote("a'b"), "'a'\\''b'")
     }
 
     // MARK: - HostResolver alias disambiguation (multi-account same-host)

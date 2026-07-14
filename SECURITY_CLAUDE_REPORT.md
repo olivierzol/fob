@@ -3,8 +3,10 @@
 **Scope:** full source tree (`Sources/FobKit`, `Sources/fob`, `Sources/FobApp`), build
 and release scripts (`Scripts/`, `.github/workflows/release.yml`, `Casks/fob.rb`).
 **Reviewer:** security audit for open-source release.
-**Date:** 2026-07-10.
-**Commit reviewed:** working tree at `baf048b` (+ `.gitignore` update).
+**Date:** 2026-07-10; **re-audited 2026-07-13** for the features shipped in v0.7.0–v0.9.0
+(server migration, git-host migration, gitconfig-aware signing) — see
+["Re-audit 2026-07-13"](#re-audit-2026-07-13--migration-git-host--signing) below.
+**Commit reviewed:** `baf048b` (original); re-audit at the v0.9.0 tree.
 
 fob is a macOS ssh-agent that keeps SSH private keys in the Secure Enclave and gates
 every signature behind user presence (Touch ID / Apple Watch / password), with
@@ -65,6 +67,9 @@ State this in the README. It is the single most important thing for users.
 | L-6 | Low | Audit log is not tamper-proof against the local user (acknowledged) | **Documented** (see note) |
 | I-1 | Info | `session-bind` binding is not tied to the signed payload → replay limits pin guarantees | **Documented** |
 | I-2 | Info | Peer attribution is spoofable (acknowledged in code) | **By design** |
+| M-4 | Medium | "Open in Terminal" ran an unquoted shell command built from a `~/.ssh/config` alias → click-to-RCE | **Fixed** (2026-07-13, shell-quoted) |
+| L-7 | Low | Migrate/verify read host/user/alias from `~/.ssh/config` without the leading-`-` revalidation the CLI applies | **Documented** (same-UID) |
+| I-3 | Info | "Verify" success is read from the remote server's greeting text, not a crypto proof | **By design** (usability check) |
 
 > **Remediation (2026-07-10).** All medium and low code-level findings are fixed in
 > commit following this report; see the per-finding "Fix applied" notes below. A
@@ -308,6 +313,77 @@ code comments already state. Do not build any policy on it (fob doesn't — good
   profile so no secret need touch disk.
 
 ---
+
+## Re-audit 2026-07-13 — migration, git-host & signing
+
+v0.7.0–v0.9.0 added substantial new surface: rewriting `~/.ssh/config`, spawning
+`ssh`/`ssh-copy-id`/`git`, opening a browser and Terminal, and parsing untrusted output
+from remote git hosts. The core finding: **one click-to-code-execution path (M-4), now
+fixed; everything else is either argv-safe or bounded by the existing same-UID threat
+model.** No remotely-exploitable issue.
+
+### M-4 — "Open in Terminal" executed an unquoted, config-derived command *(Fixed)*
+
+**Files:** `MigrateHostView.openInTerminal` (`Sources/FobApp/MigrateHostView.swift`),
+`HostSetup.fallbackCopyCommand` (`Sources/FobKit/HostSetup.swift`).
+
+When the headless key-install can't run, the migrate window shows a fallback
+`ssh-copy-id …` command and an **Open in Terminal** button. That button runs the string
+via `osascript … do script "<cmd>"` — i.e. **in a real shell**. The command was built by
+`fallbackCopyCommand` with the `alias` (and pub path) interpolated **unquoted**; the
+`alias` comes from a `~/.ssh/config` `Host` block. The `openInTerminal` escaping only
+handled `\`/`"` for the AppleScript layer, not shell metacharacters. And this path is
+reached *precisely* when `installArguments` rejected the alias (e.g. it contained a
+space), so a crafted alias like `x; curl …|sh` would execute on click. Same-UID (the
+attacker needs to write your ssh config) and click-gated — but this is the same class as
+M-1 and warranted the same treatment.
+
+**✅ Fix applied.** `fallbackCopyCommand` now POSIX single-quotes the alias and pub path
+via a new `HostSetup.shellQuote` (`'…'` with `'\''` escaping), so metacharacters are
+inert whether the command is copy-pasted or run through Terminal. Regression-tested
+(`MigrationTests.testFallbackCommandNeutralizesShellMetacharacters`, `shellQuote`). All
+other subprocesses (`createAndInstall`, `verifyMigration`, `verifyGitHost`,
+`configureGitSigning`, `discoverGitIdentities`, the CLI's `runInteractive`) use `Process`
+with explicit `argv` (no shell), so they were never shell-injectable.
+
+### L-7 — Migrate paths trust host/user/alias from `~/.ssh/config` *(Documented)*
+
+`discoverServers`/`verifyMigration`/`verifyGitHost` read `HostName`/`User`/alias out of
+`~/.ssh/config` and interpolate them into `ssh` argv without re-applying the leading-`-`
+guard (`isValidHostToken`) that the CLI `setup` path enforces. Because these go through
+`argv` (not a shell), the worst case is an **ssh option** injection (e.g. a `User` value
+of `-oProxyCommand=…`), not arbitrary shell execution — and it requires a poisoned
+`~/.ssh/config`, i.e. same-UID write access, which is already out of scope (such an
+attacker owns your session and can drive the agent directly). Documented rather than
+gated so fob doesn't refuse to migrate legitimately-unusual configs. *(Hardening option
+if desired: skip/flag candidates whose HostName/User fail `isValidHostToken`.)*
+
+### I-3 — "Verify" trusts the server greeting *(By design)*
+
+The git-host **Verify** step decides success by parsing the remote greeting
+(`HostSetup.parseSSHGreeting`: "successfully authenticated" / "Welcome to GitLab, @u!" /
+Bitbucket) rather than a cryptographic proof — a hostile endpoint could always claim
+success. This is a **usability check** ("did fob sign and did the host accept my key"),
+not a security boundary: you chose to connect to that host with `StrictHostKeyChecking=
+accept-new`, and real authentication is the SSH handshake itself. The greeting-derived
+username is display-only (rendered as SwiftUI `Text`, never executed; control bytes are
+stripped by `sanitizeForDisplay` on the error path). No action needed.
+
+### New surface reviewed and found sound
+
+- **`~/.ssh/config` rewriting** (`HostSetup.migratedConfig` + `backupAndWriteConfig`):
+  timestamped `0600` backup before every write, atomic write, only edits the matched
+  literal `Host` block (never `Match`/wildcard), fob preferred with the old key kept as a
+  fallback (no lockout). 13 golden tests pin the transform byte-for-byte.
+- **Remote key install** (`remoteAppendScript`): the public key is fed on **stdin**
+  (`k="$(cat)"`), never interpolated into the remote script; the script is a constant and
+  runs under your own remote account. `grep -qxF` dedupes. `BatchMode=yes`/`ConnectTimeout`
+  bound it; `StrictHostKeyChecking=accept-new` refuses a *changed* host key.
+- **git config writes** use `git config --file <path>`/`--global` (git owns the ini
+  format — no hand-editing), with fob-generated values.
+- **URL opening** (`sshKeySettingsURL` → `NSWorkspace.open`): only known providers get a
+  URL, always `https://` scheme; a poisoned config HostName could at worst open an
+  arbitrary https page on click (same-UID). Minor.
 
 ## Prioritized recommendations
 
