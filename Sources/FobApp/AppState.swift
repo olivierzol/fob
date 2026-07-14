@@ -610,13 +610,18 @@ final class AppState: ObservableObject {
             let asFile = runGitSync(["config", "--global", "gpg.ssh.allowedSignersFile"])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             var keyListed = false
-            if !asFile.isEmpty, let sk = signing.signingKey {
-                let asText = (try? String(contentsOfFile: (asFile as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
+            var keyLabel: String?
+            if let sk = signing.signingKey {
                 let pub = (try? String(contentsOfFile: (sk as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
-                keyListed = SSHCheckup.AllowedSigners.contains(asText, pubLine: pub)
+                keyLabel = SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: pub)
+                if !asFile.isEmpty {
+                    let asText = (try? String(contentsOfFile: (asFile as NSString).expandingTildeInPath, encoding: .utf8)) ?? ""
+                    keyListed = SSHCheckup.AllowedSigners.contains(asText, pubLine: pub)
+                }
             }
             if let f = SSHCheckup.signingVerificationFinding(
-                usesFobSigning: true, allowedSignersConfigured: !asFile.isEmpty, keyListed: keyListed) {
+                usesFobSigning: true, allowedSignersConfigured: !asFile.isEmpty,
+                keyListed: keyListed, keyLabel: keyLabel) {
                 findings.append(f)
             }
         }

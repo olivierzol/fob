@@ -138,6 +138,14 @@ public enum SSHCheckup {
             return "\(parts[0]) \(parts[1])"
         }
 
+        /// The fob key name from a public-key line's `fob:<name>` comment, if present —
+        /// so findings can name which key git signs with.
+        public static func fobKeyName(fromPubLine pubLine: String) -> String? {
+            guard let comment = pubLine.split(separator: " ").dropFirst(2).first,
+                  comment.hasPrefix("fob:") else { return nil }
+            return String(comment.dropFirst(4))
+        }
+
         public static func contains(_ fileText: String, pubLine: String) -> Bool {
             guard let kf = keyFields(pubLine) else { return false }
             return fileText.contains(kf)
@@ -159,18 +167,23 @@ public enum SSHCheckup {
     /// separate). Either the allowed_signers file isn't configured, or the key isn't in it.
     public static func signingVerificationFinding(usesFobSigning: Bool,
                                                   allowedSignersConfigured: Bool,
-                                                  keyListed: Bool) -> Finding? {
+                                                  keyListed: Bool,
+                                                  keyLabel: String? = nil) -> Finding? {
         guard usesFobSigning else { return nil }
+        // "your fob key “name”" when we know which key git signs with, else a bare phrase.
+        let named = keyLabel.map { "your fob key “\($0)”" } ?? "your fob signing key"
         if !allowedSignersConfigured {
             return Finding(severity: .medium, category: "Config",
                 title: "Signed commits aren't verifiable locally",
-                detail: "You sign commits with a fob key, but git's gpg.ssh.allowedSignersFile isn't set — `git log --show-signature` / `git verify-commit` can't check your own signatures (your git host still shows Verified). Point git at an allowed_signers file.",
+                detail: "You sign commits with \(named), but git's gpg.ssh.allowedSignersFile isn't set — `git log --show-signature` / `git verify-commit` can't check your own signatures (your git host still shows Verified). Point git at an allowed_signers file.",
                 fix: .command("git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers"))
         }
         if !keyListed {
+            let title = keyLabel.map { "Signing key “\($0)” isn’t in allowed_signers" }
+                ?? "Your signing key isn’t in allowed_signers"
             return Finding(severity: .medium, category: "Config",
-                title: "Your signing key isn't in allowed_signers",
-                detail: "Your fob signing key isn't listed in allowed_signers, so `git verify-commit` shows your commits unverified locally. Re-run a key's ••• → “Use for commit signing…” — fob adds it for you.",
+                title: title,
+                detail: "\(named.prefix(1).uppercased() + named.dropFirst()) isn't listed in allowed_signers, so `git verify-commit` shows your commits unverified locally. Open that key's ••• → “Use for commit signing…” — fob adds it for you.",
                 fix: .none)
         }
         return nil

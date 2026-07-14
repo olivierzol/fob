@@ -131,6 +131,16 @@ final class CheckupTests: XCTestCase {
         XCTAssertTrue(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: false, keyListed: false)?.title.contains("verifiable") == true)
         XCTAssertTrue(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: true, keyListed: false)?.title.contains("allowed_signers") == true)
         XCTAssertNil(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: true, keyListed: true))
+        // a key label names the key in both the title and the detail
+        let named = SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: true, keyListed: false, keyLabel: "github-feedly-signing")
+        XCTAssertTrue(named?.title.contains("github-feedly-signing") == true)
+        XCTAssertTrue(named?.detail.contains("github-feedly-signing") == true)
+    }
+
+    func testFobKeyName() {
+        XCTAssertEqual(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ecdsa-sha2-nistp256 AAAABBB fob:github-feedly-signing"), "github-feedly-signing")
+        XCTAssertNil(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ssh-ed25519 AAAABBB me@host"))
+        XCTAssertNil(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ecdsa-sha2-nistp256 AAAABBB"))
     }
 
     // MARK: - scanConfig
