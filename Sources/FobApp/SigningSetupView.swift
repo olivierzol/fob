@@ -155,7 +155,11 @@ struct SigningSetupView: View {
     private func copyBox(_ text: String, id: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                // The pubkey/commands are long unbroken strings; without this the Text
+                // collapses to one line and overflows its box onto the next section.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.12)))
             Button(copied == id ? "Copied" : "Copy") {
                 NSPasteboard.general.clearContents()
