@@ -14,14 +14,14 @@ struct SigningSetupView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
 
-    private enum Scope { case repository, global }
-
     @State private var info: AppState.SigningInfo?
     @State private var gitOnly = false
-    @State private var scope: Scope = .repository
+    @State private var identities: [AppState.GitIdentity] = []
+    @State private var scope: AppState.SigningScope = .repository
     @State private var copied: String?
     @State private var gitConfigured = false
     @State private var gitError: String?
+    @State private var alreadyConfigured = false
 
     private var keyName: String { state.signingSetupKey ?? "" }
 
@@ -42,7 +42,17 @@ struct SigningSetupView: View {
     private func load() {
         info = state.signingInfo(for: keyName)
         gitOnly = info?.gitOnly ?? false
+        identities = state.discoverGitIdentities()
+        // Multi-account: default to the first identity (writing --global would clobber
+        // their setup). Single-account: default to per-repo (safe, universal).
+        scope = identities.first.map { .identity($0) } ?? .repository
         gitConfigured = false; gitError = nil; copied = nil
+        refreshConfigured()
+    }
+
+    /// Is the selected scope already signing with this key? (Answers "is it already set?")
+    private func refreshConfigured() {
+        alreadyConfigured = info.map { state.signingConfigured(pubPath: $0.pubPath, scope: scope) } ?? false
     }
 
     @ViewBuilder
@@ -64,32 +74,39 @@ struct SigningSetupView: View {
         }
 
         step(2, "Configure git to sign with this key", nil)
-        Picker("Scope", selection: $scope) {
-            Text("This repo").tag(Scope.repository)
-            Text("All repos (global)").tag(Scope.global)
+        Picker("Where", selection: $scope) {
+            ForEach(identities) { id in
+                Text(identityLabel(id)).tag(AppState.SigningScope.identity(id))
+            }
+            Text("This repo only").tag(AppState.SigningScope.repository)
+            Text(identities.isEmpty ? "All repos (global)" : "All repos (global) ⚠︎")
+                .tag(AppState.SigningScope.global)
         }
-        .pickerStyle(.segmented).labelsHidden().frame(width: 260)
-        Text(scope == .repository
-             ? "Recommended if you switch between git identities — run these **inside** the repo you want to sign. Doesn't touch your other repos."
-             : "⚠️ Sets signing for **every** repo on this Mac. If you use multiple git accounts, use “This repo” instead.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        copyBox(info.gitConfigCommands(global: scope == .global).joined(separator: "\n"), id: "git")
-        if scope == .global {
+        .pickerStyle(.menu).labelsHidden().frame(maxWidth: 320, alignment: .leading)
+        .onChange(of: scope) { _ in gitConfigured = false; gitError = nil; refreshConfigured() }
+        Text(.init(scopeCaption)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if alreadyConfigured && !gitConfigured {
+            Label("Already signing with this key here — nothing to do.", systemImage: "checkmark.seal.fill")
+                .font(.caption).foregroundStyle(.green)
+        }
+        copyBox(info.gitConfigCommands(scope: scope).joined(separator: "\n"), id: "git")
+        if scope == .repository {
+            Text("Copy and run these inside the repo (the app can't target a repo for you).")
+                .font(.caption).foregroundStyle(.tertiary)
+        } else {
             HStack(spacing: 10) {
-                Button(gitConfigured ? "Configured ✓" : "Configure git for me") {
-                    if let err = state.configureGitSigning(pubPath: info.pubPath, signerProgram: info.signerProgram) { gitError = err; gitConfigured = false }
-                    else { gitConfigured = true; gitError = nil }
+                Button(configureButtonTitle) {
+                    if let err = state.configureGitSigning(pubPath: info.pubPath, signerProgram: info.signerProgram, scope: scope) {
+                        gitError = err; gitConfigured = false
+                    } else { gitConfigured = true; gitError = nil }
                 }
                 .disabled(gitConfigured)
                 if let gitError {
                     Text(gitError).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 } else if gitConfigured {
-                    Text("git config --global set").font(.caption).foregroundStyle(.green)
+                    Text("written ✓").font(.caption).foregroundStyle(.green)
                 }
             }
-        } else {
-            Text("Copy and run these in the repo (the app can't target a repo for you).")
-                .font(.caption).foregroundStyle(.tertiary)
         }
 
         Text("fob signs commits through a `gpg.ssh.program` wrapper, so it **won't** change `SSH_AUTH_SOCK` — your other ssh agents and `git push` auth are untouched.")
@@ -103,11 +120,34 @@ struct SigningSetupView: View {
         }
     }
 
+    private var configureButtonTitle: String {
+        if gitConfigured { return "Configured ✓" }
+        return alreadyConfigured ? "Re-apply" : "Configure git for me"
+    }
+
+    private func identityLabel(_ id: AppState.GitIdentity) -> String {
+        let who = id.email ?? id.conditionLabel
+        return "\(who) — \((id.path as NSString).abbreviatingWithTildeInPath)"
+    }
+
+    private var scopeCaption: String {
+        switch scope {
+        case .identity(let id):
+            return "Signs commits in \(id.conditionLabel) repos, via \((id.path as NSString).abbreviatingWithTildeInPath). Your other git identities are untouched."
+        case .repository:
+            return "Run these **inside** the repo you want to sign. Doesn't touch anything else."
+        case .global:
+            return identities.isEmpty
+                ? "Sets signing for every repo on this Mac."
+                : "⚠️ Every repo on this Mac — this overrides your per-identity setup and would sign other accounts with this key. Prefer an identity above."
+        }
+    }
+
     private func step(_ n: Int, _ title: String, _ detail: String?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("\(n). \(title)").font(.callout.weight(.semibold))
             if let detail {
-                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(.init(detail)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
