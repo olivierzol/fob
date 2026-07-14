@@ -34,6 +34,11 @@ USAGE:
       Permanently erase a key from the Secure Enclave (asks to confirm; --force
       skips). Remove its public key from any server/host that still trusts it.
 
+  fob checkup
+      Read-only SSH hygiene report: flags unencrypted / weak / loosely-permissioned
+      on-disk keys, risky ~/.ssh/config directives, and hosts/signing that could move
+      to fob. Changes nothing.
+
   fob pin <name> <host>
       Pin a key to a host: the agent will refuse to sign with this key for
       any other destination, or for clients that don't identify one. Host
@@ -100,6 +105,73 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+/// `(type, bits)` from `ssh-keygen -l -f <key>`, or nil.
+func sshKeygenTypeBits(_ path: String) -> (type: String, bits: Int?)? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+    process.arguments = ["-l", "-f", path]
+    let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
+    guard (try? process.run()) != nil else { return nil }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { return nil }
+    let out = String(decoding: data, as: UTF8.self)
+    let bits = out.split(separator: " ").first.flatMap { Int($0) }
+    guard let o = out.lastIndex(of: "("), let c = out.lastIndex(of: ")"), o < c else { return nil }
+    return (String(out[out.index(after: o)..<c]), bits)
+}
+
+/// Read-only SSH hygiene findings for `fob checkup` (keys + config + fob opportunities).
+func sshCheckupFindings() -> [SSHCheckup.Finding] {
+    var findings: [SSHCheckup.Finding] = []
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let sshDir = home.appendingPathComponent(".ssh")
+    let fm = FileManager.default
+
+    let skip: Set<String> = ["config", "known_hosts", "authorized_keys", "agent.sock"]
+    for name in ((try? fm.contentsOfDirectory(atPath: sshDir.path)) ?? []).sorted() {
+        if name.hasSuffix(".pub") || name.hasPrefix("config.") || name.hasPrefix("known_hosts")
+            || skip.contains(name) || name.hasPrefix(".") { continue }
+        let path = sshDir.appendingPathComponent(name).path
+        guard let contents = try? String(contentsOfFile: path, encoding: .utf8),
+              let info = SSHCheckup.parsePrivateKey(contents) else { continue }
+        if !info.isEncrypted {
+            findings.append(.init(severity: .high, category: "Key", title: "“\(name)” has no passphrase",
+                detail: "Stored unencrypted — a copy of the file is a working key. Add a passphrase (ssh-keygen -p -f \(path)) or move its hosts to fob.", fix: .none))
+        }
+        if let mode = (try? fm.attributesOfItem(atPath: path))?[.posixPermissions] as? Int,
+           SSHCheckup.isPrivateKeyPermissive(mode: mode) {
+            findings.append(.init(severity: .high, category: "Key", title: "“\(name)” is readable by other accounts",
+                detail: "Mode \(String(mode, radix: 8)). Fix: chmod 600 \(path)", fix: .none))
+        }
+        if let (type, bits) = sshKeygenTypeBits(path) {
+            let t = type.uppercased()
+            if t.contains("DSA") || (t.contains("RSA") && (bits ?? 4096) < 3072) {
+                findings.append(.init(severity: .medium, category: "Key",
+                    title: "“\(name)” is a weak/deprecated key (\(type)\(bits.map { " \($0)" } ?? ""))",
+                    detail: "Prefer Ed25519 or a fob Secure Enclave key.", fix: .none))
+            }
+        }
+    }
+
+    let config = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
+    findings += SSHCheckup.scanConfig(config)
+
+    for block in HostSetup.listHostBlocks(in: config) where !block.usesFob {
+        findings.append(.init(severity: .opportunity, category: "Opportunity",
+            title: "“\(block.alias)” still uses an on-disk key",
+            detail: "Migrate it to a fob key:  fob adopt \(block.alias)", fix: .none))
+    }
+    let gitconfig = (try? String(contentsOf: home.appendingPathComponent(".gitconfig"), encoding: .utf8)) ?? ""
+    let signing = GitConfig.parse(gitconfig)
+    if (signing.signingKey != nil || signing.format != nil), !signing.usesFob {
+        findings.append(.init(severity: .opportunity, category: "Opportunity",
+            title: "Commit signing uses a non-fob key",
+            detail: "Set up a fob signing key:  fob sign-setup <key>", fix: .none))
+    }
+    return findings.sorted { $0.severity < $1.severity }
+}
+
 /// Raw output of `git config --global --get-regexp '^includeif\.'` ("" on failure).
 func gitIncludeRegexp() -> String {
     let process = Process()
@@ -148,6 +220,24 @@ do {
         }
         for key in keys {
             print(SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(key.name)"))
+        }
+
+    case "checkup":
+        let findings = sshCheckupFindings()
+        if findings.isEmpty {
+            print("✅ SSH checkup: no issues found — your ~/.ssh looks healthy.")
+        } else {
+            let high = findings.filter { $0.severity == .high }.count
+            let med = findings.filter { $0.severity == .medium }.count
+            let low = findings.filter { $0.severity == .low }.count
+            let opp = findings.filter { $0.severity == .opportunity }.count
+            print("SSH checkup — \(high) high · \(med) medium · \(low) low · \(opp) to improve")
+            print("(read-only; fob changed nothing)")
+            for f in findings {
+                print("")
+                print("[\(f.severity.label)] \(f.title)")
+                print("  \(f.detail)")
+            }
         }
 
     case "delete":

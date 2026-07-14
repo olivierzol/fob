@@ -32,6 +32,11 @@ struct FobApp: App {
             MigrateHostView().environmentObject(state)
         }
         .windowResizability(.contentSize)
+
+        Window("SSH checkup", id: CheckupView.windowID) {
+            CheckupView().environmentObject(state)
+        }
+        .windowResizability(.contentMinSize)
     }
 }
 
