@@ -200,6 +200,8 @@ It flags:
   default account (the classic "wrong email leaked into a commit" bug).
 - **Signatures you can't verify locally** — a fob signing key that isn't yet in
   `~/.ssh/allowed_signers`, so `git verify-commit` can't check your own commits.
+- **Keys loaded in your ssh-agent** — on-disk keys the running agent has loaded sign with
+  *no* Touch ID prompt while they're loaded (fob's own keys are excluded).
 - **Opportunities** — plain-key hosts and non-fob signing keys you could move to fob.
 
 ## Security model

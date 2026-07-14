@@ -626,6 +626,18 @@ final class AppState: ObservableObject {
             }
         }
 
+        // 4. ssh-agent: on-disk keys loaded there sign with no Touch ID prompt (fob keys excluded).
+        let fobBlobs = Set(((try? store?.all()) ?? []).compactMap { key -> String? in
+            guard let pub = try? key.publicKey() else { return nil }
+            let parts = SSHFormat.authorizedKeysLine(pub, comment: "fob:\(key.name)").split(separator: " ")
+            return parts.count >= 2 ? String(parts[1]) : nil
+        })
+        let (agentStatus, agentOut) = await runProcess("/usr/bin/ssh-add", ["-L"])
+        let agentBlobs = agentStatus == 0 ? SSHCheckup.agentKeyBlobs(fromSSHAddL: agentOut) : []
+        if let f = SSHCheckup.agentLoadedKeysFinding(agentKeyBlobs: agentBlobs, fobKeyBlobs: fobBlobs) {
+            findings.append(f)
+        }
+
         return CheckupReport(findings: findings.sorted { $0.severity < $1.severity })
     }
 

@@ -122,7 +122,21 @@ func sshKeygenTypeBits(_ path: String) -> (type: String, bits: Int?)? {
 }
 
 /// Read-only SSH hygiene findings for `fob checkup` (keys + config + fob opportunities).
-func sshCheckupFindings() -> [SSHCheckup.Finding] {
+/// Full public keys the running ssh-agent has loaded (`ssh-add -L`); "" if the agent is
+/// empty or unreachable (both exit non-zero, which we treat as "nothing to report").
+func sshAddListPublicKeys() -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
+    process.arguments = ["-L"]
+    let pipe = Pipe(); process.standardOutput = pipe; process.standardError = Pipe()
+    guard (try? process.run()) != nil else { return "" }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { return "" }
+    return String(decoding: data, as: UTF8.self)
+}
+
+func sshCheckupFindings(fobKeyBlobs: Set<String>) -> [SSHCheckup.Finding] {
     var findings: [SSHCheckup.Finding] = []
     let home = FileManager.default.homeDirectoryForCurrentUser
     let sshDir = home.appendingPathComponent(".ssh")
@@ -196,6 +210,13 @@ func sshCheckupFindings() -> [SSHCheckup.Finding] {
             findings.append(f)
         }
     }
+
+    // ssh-agent: on-disk keys loaded there sign without a Touch ID prompt (fob keys excluded).
+    let agentBlobs = SSHCheckup.agentKeyBlobs(fromSSHAddL: sshAddListPublicKeys())
+    if let f = SSHCheckup.agentLoadedKeysFinding(agentKeyBlobs: agentBlobs, fobKeyBlobs: fobKeyBlobs) {
+        findings.append(f)
+    }
+
     return findings.sorted { $0.severity < $1.severity }
 }
 
@@ -262,7 +283,13 @@ do {
         }
 
     case "checkup":
-        let findings = sshCheckupFindings()
+        // fob keys' base64 blobs, so the ssh-agent check can exclude them.
+        let fobBlobs = Set(((try? store.all()) ?? []).compactMap { key -> String? in
+            guard let line = try? SSHFormat.authorizedKeysLine(key.publicKey(), comment: "fob:\(key.name)") else { return nil }
+            let parts = line.split(separator: " ")
+            return parts.count >= 2 ? String(parts[1]) : nil
+        })
+        let findings = sshCheckupFindings(fobKeyBlobs: fobBlobs)
         if findings.isEmpty {
             print("✅ SSH checkup: no issues found — your ~/.ssh looks healthy.")
         } else {

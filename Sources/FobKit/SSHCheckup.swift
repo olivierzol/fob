@@ -189,6 +189,33 @@ public enum SSHCheckup {
         return nil
     }
 
+    // MARK: - ssh-agent (keys usable without a presence prompt)
+
+    /// The base64 key-blob fields (`ssh-ed25519 <BLOB> …` → `<BLOB>`) from `ssh-add -L`
+    /// output, one per loaded identity. The blob uniquely identifies a public key across
+    /// agents, so it can be compared against fob's keys regardless of comment/socket.
+    public static func agentKeyBlobs(fromSSHAddL output: String) -> [String] {
+        output.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: " ")
+            guard parts.count >= 2, parts[0].hasPrefix("ssh-") || parts[0].hasPrefix("ecdsa-") || parts[0].hasPrefix("sk-") else { return nil }
+            return String(parts[1])
+        }
+    }
+
+    /// Flag on-disk keys sitting in the running ssh-agent: they sign with **no Touch ID
+    /// prompt** for as long as they're loaded — the opposite of fob's per-use presence gate.
+    /// fob's own keys (matched by blob) are excluded, so pointing `SSH_AUTH_SOCK` at fob
+    /// produces no finding. nil = nothing loaded but fob keys (or the agent was unreachable).
+    public static func agentLoadedKeysFinding(agentKeyBlobs: [String], fobKeyBlobs: Set<String>) -> Finding? {
+        let foreign = agentKeyBlobs.filter { !fobKeyBlobs.contains($0) }
+        guard !foreign.isEmpty else { return nil }
+        let n = foreign.count
+        return Finding(severity: .medium, category: "Agent",
+            title: "\(n) key\(n == 1 ? "" : "s") loaded in your ssh-agent sign without Touch ID",
+            detail: "Your ssh-agent has \(n) non-fob \(n == 1 ? "key" : "keys") loaded — while loaded, \(n == 1 ? "it signs" : "they sign") for any request with no presence prompt, which is exactly what fob avoids. Inspect with `ssh-add -l`; drop one with `ssh-add -d <keyfile>`, or clear the agent with `ssh-add -D`. Better: migrate those hosts to fob so signing is Touch ID-gated.",
+            fix: .command("ssh-add -l"))
+    }
+
     // MARK: - File permissions
 
     /// A private key readable by group or other (`mode & 0o077 != 0`) — ssh itself refuses

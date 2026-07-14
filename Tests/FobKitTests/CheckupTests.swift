@@ -137,6 +137,32 @@ final class CheckupTests: XCTestCase {
         XCTAssertTrue(named?.detail.contains("github-feedly-signing") == true)
     }
 
+    func testAgentKeyBlobs() {
+        let out = """
+        ssh-ed25519 AAAABLOB1 me@laptop
+        ecdsa-sha2-nistp256 AAAABLOB2 fob:space
+        The agent has no identities.
+        """
+        XCTAssertEqual(SSHCheckup.agentKeyBlobs(fromSSHAddL: out), ["AAAABLOB1", "AAAABLOB2"])
+        XCTAssertEqual(SSHCheckup.agentKeyBlobs(fromSSHAddL: ""), [])
+    }
+
+    func testAgentLoadedKeysFinding() {
+        let fob: Set<String> = ["FOBBLOB"]
+        // only fob keys loaded → nil
+        XCTAssertNil(SSHCheckup.agentLoadedKeysFinding(agentKeyBlobs: ["FOBBLOB"], fobKeyBlobs: fob))
+        // empty agent → nil
+        XCTAssertNil(SSHCheckup.agentLoadedKeysFinding(agentKeyBlobs: [], fobKeyBlobs: fob))
+        // a non-fob key loaded → medium finding, counted, Agent category
+        let f = SSHCheckup.agentLoadedKeysFinding(agentKeyBlobs: ["FOBBLOB", "OTHER1", "OTHER2"], fobKeyBlobs: fob)
+        XCTAssertEqual(f?.severity, .medium)
+        XCTAssertEqual(f?.category, "Agent")
+        XCTAssertTrue(f?.title.contains("2 keys") == true)
+        // singular wording
+        let one = SSHCheckup.agentLoadedKeysFinding(agentKeyBlobs: ["OTHER1"], fobKeyBlobs: fob)
+        XCTAssertTrue(one?.title.contains("1 key ") == true)
+    }
+
     func testFobKeyName() {
         XCTAssertEqual(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ecdsa-sha2-nistp256 AAAABBB fob:github-feedly-signing"), "github-feedly-signing")
         XCTAssertNil(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ssh-ed25519 AAAABBB me@host"))
