@@ -56,8 +56,6 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.openWindow) private var openWindow
 
-    @State private var newKeyName = ""
-    @State private var newKeyBiometry = true
     @State private var openMenuKey: String?
 
     private var t: Theme { Theme.current(scheme) }
@@ -157,7 +155,7 @@ struct ContentView: View {
                     .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent))
             }
             .buttonStyle(.plain)
-            Text("…or create your first key below.")
+            Text("…or **New key…** below to create one from scratch.")
                 .font(.system(size: 11)).foregroundStyle(t.sub)
         }
         .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 10)
@@ -187,61 +185,14 @@ struct ContentView: View {
         .padding(.horizontal, 14).padding(.vertical, 8)
     }
 
-    // MARK: New key
+    // MARK: New key / actions
 
     private var newKeySection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            sectionLabel("NEW KEY").padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
-            HStack(spacing: 8) {
-                TextField("key name", text: $newKeyName)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12.5)).foregroundStyle(t.text)
-                    .padding(.horizontal, 10).frame(height: 28)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(t.fieldBg))
-                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(t.fieldBorder, lineWidth: 0.5))
-                    .onSubmit(generate)
-                Button(action: generate) {
-                    Text("Generate")
-                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 14).frame(height: 28)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent))
-                }
-                .buttonStyle(.plain)
-                .disabled(newKeyName.trimmingCharacters(in: .whitespaces).isEmpty)
-                .opacity(newKeyName.trimmingCharacters(in: .whitespaces).isEmpty ? 0.5 : 1)
-            }
-            .padding(.horizontal, 14)
-
-            Button { newKeyBiometry.toggle() } label: {
-                HStack(spacing: 7) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(newKeyBiometry ? Theme.accent : .clear)
-                        RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(newKeyBiometry ? Theme.accent : t.sub.opacity(0.5), lineWidth: 1.5)
-                        if newKeyBiometry {
-                            Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
-                        }
-                    }
-                    .frame(width: 15, height: 15)
-                    Text("Touch ID only").font(.system(size: 12)).foregroundStyle(t.text)
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 8)
-
-            if let gen = state.lastGenerated { generatedBox(gen) }
-
-            HStack(spacing: 16) {
-                linkButton("sparkles", "Set up a host…") {
-                    openWindow(id: HostSetupView.windowID)
-                }
-                linkButton("arrow.right.arrow.left", "Migrate…") {
-                    openWindow(id: MigrateView.windowID)
-                }
-            }
-            .padding(.horizontal, 14).padding(.bottom, 12)
+        HStack(spacing: 18) {
+            linkButton("plus", "New key…") { openWindow(id: HostSetupView.windowID) }
+            linkButton("arrow.right.arrow.left", "Migrate…") { openWindow(id: MigrateView.windowID) }
         }
+        .padding(.horizontal, 14).padding(.vertical, 12)
     }
 
     private func linkButton(_ icon: String, _ title: String, _ action: @escaping () -> Void) -> some View {
@@ -256,44 +207,6 @@ struct ContentView: View {
             .font(.system(size: 12)).foregroundStyle(Theme.accent)
         }
         .buttonStyle(.plain)
-    }
-
-    private func generatedBox(_ gen: AppState.GeneratedKey) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("“\(gen.name)” created. Add this public key where you'll use it — a server's authorized_keys, or GitHub/GitLab:")
-                .font(.system(size: 11)).foregroundStyle(t.sub).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Text(gen.pubLine)
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(t.text)
-                    .lineLimit(2).truncationMode(.middle)
-                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(t.fieldBg))
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(gen.pubLine, forType: .string)
-                } label: {
-                    Text("Copy").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.accent)
-                }
-                .buttonStyle(.plain)
-            }
-            HStack(spacing: 14) {
-                Text("Use for:").font(.system(size: 11)).foregroundStyle(t.sub)
-                linkButton("sparkles", "a host…") { openWindow(id: HostSetupView.windowID) }
-                linkButton("signature", "commit signing…") {
-                    state.signingSetupKey = gen.name
-                    state.signingSetupHost = nil
-                    openWindow(id: SigningSetupView.windowID)
-                }
-            }
-        }
-        .padding(.horizontal, 14).padding(.bottom, 8)
-    }
-
-    private func generate() {
-        let name = newKeyName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        state.generate(name: name, requireBiometry: newKeyBiometry)
-        newKeyName = ""
     }
 
     // MARK: Activity

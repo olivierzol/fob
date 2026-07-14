@@ -51,6 +51,7 @@ struct MigrateView: View {
         .padding(22)
         .frame(width: 480)
         .onAppear(perform: load)
+        .onChange(of: state.configRevision) { _ in load() }
     }
 
     private func load() {

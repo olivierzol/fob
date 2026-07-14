@@ -13,7 +13,7 @@ struct FobApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Set up a host", id: HostSetupView.windowID) {
+        Window("New key", id: HostSetupView.windowID) {
             HostSetupView().environmentObject(state)
         }
         .windowResizability(.contentSize)

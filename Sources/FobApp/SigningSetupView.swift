@@ -96,7 +96,7 @@ struct SigningSetupView: View {
         } else {
             HStack(spacing: 10) {
                 Button(configureButtonTitle) {
-                    if let err = state.configureGitSigning(pubPath: info.pubPath, signerProgram: info.signerProgram, scope: scope) {
+                    if let err = state.configureGitSigning(pubPath: info.pubPath, signerProgram: info.signerProgram, pubLine: info.pubLine, scope: scope) {
                         gitError = err; gitConfigured = false
                     } else { gitConfigured = true; gitError = nil }
                 }
