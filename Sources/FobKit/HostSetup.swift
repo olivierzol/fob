@@ -191,6 +191,7 @@ public enum HostSetup {
         // 4. Scan the body.
         var hasFobAgent = false, hasFobIdentityFile = false, hasIdentitiesOnly = false
         var nonFobAgentIdxs: [Int] = [], nonFobIdentityFileIdxs: [Int] = []
+        var keychainDirectiveIdxs: [Int] = []   // UseKeychain/AddKeysToAgent — see below
         var lastDirectiveIdx = blockStart
         var firstIdentityFileIdx: Int?   // insert fob BEFORE this, so fob is preferred
         for i in (blockStart + 1)..<end {
@@ -206,13 +207,19 @@ public enum HostSetup {
                 else { nonFobIdentityFileIdxs.append(i) }
             case "identitiesonly":
                 if value.lowercased() == "yes" { hasIdentitiesOnly = true }
+            case "usekeychain", "addkeystoagent":
+                // These cache the block's on-disk key in the macOS Keychain/agent, so it
+                // signs with no Touch ID. Pointless (and counterproductive) once the old
+                // key is retired and fob serves this host via IdentityAgent — retiring
+                // without removing them lets the Keychain keep re-loading the old key.
+                if value.lowercased() == "yes" { keychainDirectiveIdxs.append(i) }
             default: break
             }
         }
 
         // 5. Idempotency: nothing to add and (not retiring, or nothing left to retire).
         if hasFobAgent && hasFobIdentityFile && hasIdentitiesOnly
-            && (!retireOld || nonFobIdentityFileIdxs.isEmpty) {
+            && (!retireOld || (nonFobIdentityFileIdxs.isEmpty && keychainDirectiveIdxs.isEmpty)) {
             return config
         }
 
@@ -225,6 +232,9 @@ public enum HostSetup {
         if retireOld {
             for i in nonFobIdentityFileIdxs {
                 commentOut(i, suffix: "   # disabled by fob after verified migration")
+            }
+            for i in keychainDirectiveIdxs {
+                commentOut(i, suffix: "   # disabled by fob (old key retired)")
             }
         }
 

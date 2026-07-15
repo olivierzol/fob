@@ -212,7 +212,7 @@ public enum SSHCheckup {
         let n = foreign.count
         return Finding(severity: .medium, category: "Agent",
             title: "\(n) key\(n == 1 ? "" : "s") loaded in your ssh-agent sign without Touch ID",
-            detail: "Your ssh-agent has \(n) non-fob \(n == 1 ? "key" : "keys") loaded — while loaded, \(n == 1 ? "it signs" : "they sign") for any request with no presence prompt, which is exactly what fob avoids. Inspect with `ssh-add -l`; drop one with `ssh-add -d <keyfile>`, or clear the agent with `ssh-add -D`. Better: migrate those hosts to fob so signing is Touch ID-gated.",
+            detail: "Your ssh-agent has \(n) non-fob \(n == 1 ? "key" : "keys") loaded — while loaded, \(n == 1 ? "it signs" : "they sign") for any request with no presence prompt, which is exactly what fob avoids. Inspect with `ssh-add -l`; drop one with `ssh-add -d <keyfile>`, or clear the agent with `ssh-add -D`. On macOS a key can reload from the login Keychain (so it returns after `ssh-add -D`, even if its file is gone) — delete it in Keychain Access → login (search “ssh”) to remove it for good. Better still: migrate those hosts to fob so signing is Touch ID-gated.",
             fix: .command("ssh-add -l"))
     }
 

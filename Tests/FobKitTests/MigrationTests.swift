@@ -135,6 +135,22 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(migrate(retired, retireOld: true)!, retired, "retire is idempotent")
     }
 
+    // 12b. retireOld also comments out stale UseKeychain/AddKeysToAgent (they only cached
+    //      the old on-disk key; left in, the Keychain keeps re-loading it).
+    func testRetireCommentsKeychainDirectives() {
+        let config = "Host web\n  HostName web.example\n  IdentityFile ~/.ssh/id\n  UseKeychain yes\n  AddKeysToAgent yes\n"
+        // Without retire, keychain directives are left alone (old key still active).
+        let migrated = migrate(config)!
+        XCTAssertTrue(migrated.contains("\n  UseKeychain yes"))
+        XCTAssertTrue(migrated.contains("\n  AddKeysToAgent yes"))
+        // With retire, they're commented out with the retirement note, and it's idempotent.
+        let retired = migrate(migrated, retireOld: true)!
+        XCTAssertTrue(retired.contains("# UseKeychain yes"))
+        XCTAssertTrue(retired.contains("# AddKeysToAgent yes"))
+        XCTAssertTrue(retired.contains("old key retired"))
+        XCTAssertEqual(migrate(retired, retireOld: true)!, retired, "retire is idempotent")
+    }
+
     // 13. Alias only under Host * / Match → nil (never touched).
     func testWildcardAndMatchNotMigrated() {
         XCTAssertNil(migrate("Host *\n  IdentityFile ~/.ssh/id\n"))

@@ -38,7 +38,7 @@ enum Setup {
             guard let newConfig = HostSetup.migratedConfig(configText, alias: alias,
                                                            fobPubPath: pubURL.path, socketPath: store.socketPath,
                                                            retireOld: true), newConfig != configText else {
-                print("Nothing to retire — no active non-fob IdentityFile in `Host \(alias)`.")
+                print("Nothing to retire — `Host \(alias)` is already fob-only (no active non-fob IdentityFile or key-caching directives).")
                 return
             }
             printDiff(configText, newConfig)
