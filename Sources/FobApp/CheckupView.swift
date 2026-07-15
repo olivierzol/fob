@@ -2,16 +2,12 @@ import AppKit
 import FobKit
 import SwiftUI
 
-/// The "SSH checkup" window: a read-only scan of ~/.ssh (keys, config) plus
+/// The "SSH checkup" page (a Configure-window tab): a read-only scan of ~/.ssh (keys, config) plus
 /// migrate/signing opportunities, shown as severity-ranked findings. Every fix is opt-in
 /// — it either opens an existing fob flow or copies a command; the checkup never edits
 /// anything itself.
 struct CheckupView: View {
-    static let windowID = "fob-checkup"
-
     @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openWindow) private var openWindow
 
     @State private var report: AppState.CheckupReport?
     @State private var running = false
@@ -45,13 +41,9 @@ struct CheckupView: View {
                 HStack { Spacer(); ProgressView(); Spacer() }.padding(.vertical, 20)
             }
 
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
-            }
         }
         .padding(22)
-        .frame(width: 560)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { if report == nil { run() } }
     }
 
@@ -107,8 +99,7 @@ struct CheckupView: View {
         case .migrate(let alias):
             Button("Migrate \(alias)…") {
                 state.migrateAlias = alias
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: MigrateHostView.windowID)
+                state.configDetail = .migrateHost
             }.font(.caption).padding(.top, 2)
         case .signing:
             Text("Fix: a key's ••• → “Use for commit signing…”.")

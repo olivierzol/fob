@@ -2,17 +2,14 @@ import AppKit
 import FobKit
 import SwiftUI
 
-/// The per-host migration flow (opened from MigrateView). Staged, and safe by design:
+/// The per-host migration page (a pushed detail from the Migrate tab / a checkup finding).
+/// Staged, and safe by design:
 /// install the fob key on the server (using your existing key) → preview + back up +
 /// apply the ~/.ssh/config edit → verify fob works with Touch ID → pin, and only then
 /// optionally retire the old key. The old key stays active until Retire, so there's no
 /// lockout at any step.
 struct MigrateHostView: View {
-    static let windowID = "fob-migrate-host"
-
     @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openWindow) private var openWindow
 
     @State private var candidate: AppState.MigrationCandidate?
     @State private var alreadyMigrated = false
@@ -51,7 +48,7 @@ struct MigrateHostView: View {
             else { Text("This host is no longer in ~/.ssh/config.").foregroundStyle(.secondary) }
         }
         .padding(22)
-        .frame(width: 520)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear(perform: load)
         .onChange(of: state.migrateAlias) { _ in load() }
     }
@@ -80,7 +77,7 @@ struct MigrateHostView: View {
         }
         HStack {
             Spacer()
-            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            Button("Done") { state.configDetail = nil }.keyboardShortcut(.defaultAction)
         }
     }
 
@@ -177,8 +174,7 @@ struct MigrateHostView: View {
                 Button("Sign commits with this key →") {
                     state.signingSetupKey = alias
                     state.signingSetupHost = c.host
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: SigningSetupView.windowID)
+                    state.configDetail = .signing
                 }
             }
         }

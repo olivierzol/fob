@@ -57,6 +57,7 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
 
     @State private var openMenuKey: String?
+    @State private var menuUsage: AppState.KeyUsage?
 
     private var t: Theme { Theme.current(scheme) }
     private let width: CGFloat = 360
@@ -146,8 +147,7 @@ struct ContentView: View {
             Text("fob keeps SSH keys in the Secure Enclave, unlocked by Touch ID. Already using SSH keys? Migrate a server — fob adds a new key alongside the old one and proves it works before you retire anything.")
                 .font(.system(size: 11.5)).foregroundStyle(t.sub).fixedSize(horizontal: false, vertical: true)
             Button {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: MigrateView.windowID)
+                openConfigWindow(.migrate)
             } label: {
                 Text("Migrate an existing server…")
                     .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
@@ -155,7 +155,7 @@ struct ContentView: View {
                     .background(RoundedRectangle(cornerRadius: 7).fill(Theme.accent))
             }
             .buttonStyle(.plain)
-            Text("…or **New key…** below to create one from scratch.")
+            Text("…or **Configure… → New key** to create one from scratch.")
                 .font(.system(size: 11)).foregroundStyle(t.sub)
         }
         .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 10)
@@ -189,16 +189,24 @@ struct ContentView: View {
 
     private var newKeySection: some View {
         HStack(spacing: 18) {
-            linkButton("plus", "New key…") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: HostSetupView.windowID)
-            }
-            linkButton("arrow.right.arrow.left", "Migrate…") {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: MigrateView.windowID)
-            }
+            linkButton("slider.horizontal.3", "Configure…") { openConfigWindow(.newKey) }
+            Spacer()
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
+    }
+
+    /// Set the config window's route and bring it up (all popover flows funnel through here).
+    private func openConfigWindow(_ tab: AppState.ConfigTab, detail: AppState.ConfigDetail? = nil) {
+        state.openConfig(tab: tab, detail: detail)
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: ConfigWindow.windowID)
+    }
+
+    /// Open the signing page in the config window for this key (from the ••• menu).
+    private func openSigning(_ name: String) {
+        state.signingSetupKey = name
+        state.signingSetupHost = nil
+        openConfigWindow(.newKey, detail: .signing)
     }
 
     private func linkButton(_ icon: String, _ title: String, _ action: @escaping () -> Void) -> some View {
@@ -252,27 +260,11 @@ struct ContentView: View {
     // MARK: Footer
 
     private var footer: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Launch at login").font(.system(size: 12)).foregroundStyle(t.text)
-                Spacer()
-                Toggle("", isOn: Binding(get: { state.launchAtLogin },
-                                         set: { state.setLaunchAtLogin($0) }))
-                    .labelsHidden().toggleStyle(.switch).tint(Theme.green)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 11)
-            divider
-            HStack {
-                footerButton("SSH checkup") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    openWindow(id: CheckupView.windowID)
-                }
-                footerButton("Reveal audit log") { state.revealAuditLog() }
-                Spacer()
-                footerButton("Quit fob") { NSApplication.shared.terminate(nil) }
-            }
-            .padding(.horizontal, 12).padding(.vertical, 9)
+        HStack {
+            Spacer()
+            footerButton("Quit fob") { NSApplication.shared.terminate(nil) }
         }
+        .padding(.horizontal, 12).padding(.vertical, 9)
     }
 
     private func footerButton(_ title: String, _ action: @escaping () -> Void) -> some View {
@@ -288,7 +280,11 @@ struct ContentView: View {
     // MARK: Dropdown
 
     private func toggleMenu(_ name: String) {
-        openMenuKey = (openMenuKey == name) ? nil : name
+        let opening = openMenuKey != name
+        openMenuKey = opening ? name : nil
+        // Compute usage once, only for the key whose menu is opening, so the dropdown can
+        // scope the signing item (git concept) without pricing it into every key's render.
+        menuUsage = opening ? state.keyUsage(name: name) : nil
     }
 
     @ViewBuilder
@@ -321,12 +317,13 @@ struct ContentView: View {
             if key.isPinned {
                 menuItem("Unpin (any destination)", color: t.text) { state.unpin(name: key.name) }
             }
-            menuItem("Pin to host…", color: t.text) { state.requestPin(name: key.name) }
-            menuItem("Use for commit signing…", color: t.text) {
-                state.signingSetupKey = key.name
-                state.signingSetupHost = nil
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: SigningSetupView.windowID)
+            if !(menuUsage?.isSigningOnly ?? false) {
+                menuItem("Pin to host…", color: t.text) { state.requestPin(name: key.name) }
+            }
+            if menuUsage?.signsCommits ?? false {
+                menuItem("Signing setup…", color: t.text) { openSigning(key.name) }
+            } else if menuUsage?.canOfferSigning ?? true {
+                menuItem("Use for commit signing…", color: t.text) { openSigning(key.name) }
             }
             menuItem("Delete…", color: Theme.red) { state.requestDelete(name: key.name) }
         }

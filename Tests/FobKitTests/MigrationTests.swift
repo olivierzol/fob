@@ -151,6 +151,35 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(migrate(retired, retireOld: true)!, retired, "retire is idempotent")
     }
 
+    // 12c. removeFobHostBlock deletes a pure fob-created block (+ its "# added by fob"
+    //      comment) but leaves a migrated host with a live old key untouched.
+    func testRemoveFobHostBlock() {
+        let config = """
+        Host keep
+          IdentityFile ~/.ssh/id_keep
+
+        # added by fob
+        Host web
+          HostName web.example
+          IdentityAgent ~/.fob/agent.sock
+          IdentityFile ~/.ssh/fob_web.pub
+          IdentitiesOnly yes
+
+        Host other
+          HostName other.example
+        """
+        let out = HostSetup.removeFobHostBlock(config, alias: "web")!
+        XCTAssertFalse(out.contains("Host web"))
+        XCTAssertFalse(out.contains("# added by fob"))
+        XCTAssertTrue(out.contains("Host keep"))
+        XCTAssertTrue(out.contains("Host other"))
+        // A block with an ACTIVE non-fob IdentityFile (migrated, old key live) is left alone.
+        let migrated = "Host web\n  IdentityAgent ~/.fob/agent.sock\n  IdentityFile ~/.ssh/fob_web.pub\n  IdentityFile ~/.ssh/id_old\n"
+        XCTAssertNil(HostSetup.removeFobHostBlock(migrated, alias: "web"))
+        // No such block → nil.
+        XCTAssertNil(HostSetup.removeFobHostBlock("Host a\n  HostName a\n", alias: "web"))
+    }
+
     // 13. Alias only under Host * / Match → nil (never touched).
     func testWildcardAndMatchNotMigrated() {
         XCTAssertNil(migrate("Host *\n  IdentityFile ~/.ssh/id\n"))

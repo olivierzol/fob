@@ -1,16 +1,11 @@
-import AppKit
 import FobKit
 import SwiftUI
 
-/// The "Migrate to fob" window: lists the servers already in ~/.ssh/config and starts a
+/// The "Migrate to fob" page: lists the servers already in ~/.ssh/config and starts a
 /// per-host migration. Servers are the focus; commit signing is surfaced only as a
 /// pointer to the ••• → "Use for commit signing…" flow.
 struct MigrateView: View {
-    static let windowID = "fob-migrate"
-
     @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openWindow) private var openWindow
 
     @State private var servers: [AppState.MigrationCandidate] = []
     @State private var signing: GitConfig.SigningInfo?
@@ -45,11 +40,10 @@ struct MigrateView: View {
             HStack {
                 Button("Refresh") { load() }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
         }
         .padding(22)
-        .frame(width: 480)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear(perform: load)
         .onChange(of: state.configRevision) { _ in load() }
     }
@@ -93,8 +87,7 @@ struct MigrateView: View {
 
     private func openMigrate(_ alias: String) {
         state.migrateAlias = alias
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: MigrateHostView.windowID)
+        state.configDetail = .migrateHost
     }
 
     @ViewBuilder
