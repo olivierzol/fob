@@ -430,4 +430,44 @@ public enum HostSetup {
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
         return backupURL
     }
+
+    /// Remove a fob-created `Host <alias>` block entirely — used when its key is deleted, so
+    /// a dead entry pointing at a now-missing key doesn't linger (and re-appear in Migrate).
+    /// Only removes when the block is a single-alias block that routes through fob AND has no
+    /// active non-fob `IdentityFile` (a migrated host with a live old key is left untouched).
+    /// Also drops an immediately preceding `# added by fob` comment and trailing blank lines.
+    /// Returns nil when there's nothing safe to remove.
+    public static func removeFobHostBlock(_ config: String, alias: String) -> String? {
+        guard let parsed = parseHostBlock(alias: alias, in: config), parsed.usesFobAgent,
+              parsed.identityFiles.allSatisfy({ isFobIdentity($0) }) else { return nil }
+        var lines = config.components(separatedBy: "\n")
+        func isSectionStart(_ raw: String) -> Bool {
+            let l = raw.trimmingCharacters(in: .whitespaces).lowercased()
+            return l == "host" || l.hasPrefix("host ") || l == "match" || l.hasPrefix("match ")
+        }
+        // The literal `Host <alias>` line — only a single-alias block is safe to remove
+        // wholesale (a `Host a b` line also serves other aliases).
+        var start: Int?
+        for (i, raw) in lines.enumerated() {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.lowercased().hasPrefix("host ") else { continue }
+            let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).dropFirst().map(String.init)
+            if tokens == [alias] { start = i; break }
+        }
+        guard var blockStart = start else { return nil }
+        var end = blockStart + 1
+        while end < lines.count { if isSectionStart(lines[end]) { break }; end += 1 }
+        // Absorb an immediately preceding fob-written marker ("# added by fob[ setup]") only —
+        // never an unrelated user comment sitting above the block.
+        if blockStart > 0,
+           lines[blockStart - 1].trimmingCharacters(in: .whitespaces).hasPrefix("# added by fob") {
+            blockStart -= 1
+        }
+        // Absorb trailing blank lines that separated this block from the next.
+        while end < lines.count, lines[end].trimmingCharacters(in: .whitespaces).isEmpty { end += 1 }
+        lines.removeSubrange(blockStart..<end)
+        var result = lines.joined(separator: "\n")
+        if !result.isEmpty && !result.hasSuffix("\n") { result += "\n" }
+        return result
+    }
 }

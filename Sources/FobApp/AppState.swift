@@ -37,6 +37,23 @@ final class AppState: ObservableObject {
     /// Bumped after any ~/.ssh/config write so open lists (e.g. Migrate) refresh live.
     @Published var configRevision = 0
 
+    // MARK: - Config window routing
+    // The single "fob" window shows one of these tabs; two flows (signing, migrate-a-host)
+    // are reached from other flows/the popover, so they render as a pushed detail over the
+    // current tab rather than as tabs of their own.
+    enum ConfigTab: Hashable { case newKey, keys, migrate, checkup, audit, settings }
+    enum ConfigDetail: Equatable { case signing, migrateHost }
+    @Published var configTab: ConfigTab = .newKey
+    @Published var configDetail: ConfigDetail?
+
+    /// Set the config window's route, then the caller opens the window. Detail routes reuse
+    /// the existing `signingSetupKey`/`migrateAlias` fields as their parameters (set those
+    /// first). Passing a tab clears any active detail.
+    func openConfig(tab: ConfigTab, detail: ConfigDetail? = nil) {
+        configTab = tab
+        configDetail = detail
+    }
+
     private let store: KeyStore?
     private var agent: Agent?
     private static let feedLimit = 40
@@ -130,6 +147,41 @@ final class AppState: ObservableObject {
 
     func delete(name: String) {
         run { store in try store.remove(name: name) }
+        // Only tidy the key's config/pub if the enclave key was actually erased — a failed
+        // remove must not leave the key alive while stripping its ~/.ssh/config entry.
+        if actionError == nil { cleanupAfterDelete(name) }
+    }
+
+    /// After erasing the enclave key, clear what fob wrote for it: the exported public key
+    /// and — if this alias had a fob-created `~/.ssh/config` block — that block (backed up
+    /// first). Otherwise the dead entry lingers and re-appears in Migrate (the confusion
+    /// this fixes). A migrated host with a live old key is left untouched by removeFobHostBlock.
+    private func cleanupAfterDelete(_ name: String) {
+        let ssh = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+        try? FileManager.default.removeItem(at: ssh.appendingPathComponent("fob_\(name).pub"))
+        let cfg = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        if let new = HostSetup.removeFobHostBlock(cfg, alias: name), new != cfg {
+            _ = try? HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
+            configRevision += 1
+        }
+    }
+
+    /// Remove a single fob `Host <alias>` block from ~/.ssh/config (backup first) — used by
+    /// the Keys page to prune a redundant SSH auth alias on a signing-only key. Returns an
+    /// error string, or nil on success (also nil-safe: a migrated host with a live old key
+    /// isn't removable and returns a message rather than touching it). Bumps configRevision.
+    func removeSSHHostAlias(_ alias: String) -> String? {
+        let cfg = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        guard let new = HostSetup.removeFobHostBlock(cfg, alias: alias), new != cfg else {
+            return "Couldn’t remove “\(alias)” — it isn’t a plain fob host block."
+        }
+        do {
+            _ = try HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
+            configRevision += 1
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     /// Confirm-then-delete via an AppKit alert. A SwiftUI `confirmationDialog` fired
@@ -142,7 +194,8 @@ final class AppState: ObservableObject {
             let alert = NSAlert()
             alert.messageText = "Delete key “\(name)”?"
             alert.informativeText =
-                "The Secure Enclave key is erased permanently and cannot be recovered."
+                "The Secure Enclave key is erased permanently and cannot be recovered. "
+                + "fob also removes its exported public key and its ~/.ssh/config entry (backed up first)."
             alert.alertStyle = .critical
             alert.addButton(withTitle: "Delete")
             alert.addButton(withTitle: "Cancel")
@@ -322,6 +375,64 @@ final class AppState: ObservableObject {
     func gitSigningInfo() -> GitConfig.SigningInfo {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gitconfig")
         return GitConfig.parse((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+    }
+
+    /// What a key is actually used for, so the Keys page can tailor its row (e.g. hide
+    /// "Sign commits…" for a key that already signs, or "Pin" for a signing-only key).
+    struct KeyUsage: Equatable {
+        let signsCommits: Bool     // it's the git signing key (global or any includeIf identity)
+        let authHosts: [String]    // ~/.ssh/config aliases whose IdentityFile is this fob key
+        let authGitHosts: [String] // subset of authHosts that are git services (GitHub/GitLab/…)
+        var isSigningOnly: Bool { signsCommits && authHosts.isEmpty }
+        var isUnused: Bool { !signsCommits && authHosts.isEmpty }
+        /// Commit signing is a git concept — offer it for git-service keys or a bare key, not
+        /// for a plain server-login key where it's meaningless.
+        var canOfferSigning: Bool { !signsCommits && (isUnused || !authGitHosts.isEmpty) }
+    }
+
+    func keyUsage(name: String) -> KeyUsage {
+        let inputs = usageInputs()
+        return usage(for: name, inputs: inputs)
+    }
+
+    /// Usage for every key in one shot — shares the git/ssh reads across all keys so the
+    /// Keys tab doesn't spawn a subprocess storm (the source of the tab-open lag).
+    func keyUsages() -> [String: KeyUsage] {
+        let inputs = usageInputs()
+        var out: [String: KeyUsage] = [:]
+        for key in keys { out[key.name] = usage(for: key.name, inputs: inputs) }
+        return out
+    }
+
+    /// The shared, key-independent reads: the set of configured signing-key basenames
+    /// (global + every includeIf identity) and the parsed ssh `Host` blocks. Computed once.
+    private struct UsageInputs { let signingBases: Set<String>; let blocks: [HostSetup.HostBlock] }
+    private func usageInputs() -> UsageInputs {
+        func base(_ p: String) -> String {
+            (p.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
+        }
+        var signing = Set<String>()
+        let g = base(runGitSync(["config", "--global", "user.signingkey"]))
+        if !g.isEmpty { signing.insert(g) }
+        for inc in GitConfig.parseIncludeEntries(runGitSync(["config", "--global", "--get-regexp", "^includeif\\."])) {
+            let b = base(runGitSync(["config", "--file", (inc.path as NSString).expandingTildeInPath, "user.signingkey"]))
+            if !b.isEmpty { signing.insert(b) }
+        }
+        let cfg = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        return UsageInputs(signingBases: signing, blocks: HostSetup.listHostBlocks(in: cfg))
+    }
+
+    private func usage(for name: String, inputs: UsageInputs) -> KeyUsage {
+        let pubBase = "fob_\(name).pub"
+        let mine = inputs.blocks.filter {
+            $0.parsed.identityFiles.contains { ($0 as NSString).lastPathComponent == pubBase }
+        }
+        let gitHosts = mine
+            .filter { HostSetup.isGitHost(hostName: $0.parsed.hostName ?? $0.alias, user: $0.parsed.user) }
+            .map(\.alias)
+        return KeyUsage(signsCommits: inputs.signingBases.contains(pubBase),
+                        authHosts: Array(Set(mine.map(\.alias))).sorted(),
+                        authGitHosts: Array(Set(gitHosts)).sorted())
     }
 
     /// Create (or reuse) the fob key, export its public key, and install it on the server
@@ -769,6 +880,7 @@ final class AppState: ObservableObject {
         }
     }
 
+
     /// Write the signing config to `scope` (global, or a specific include file for a
     /// multi-account identity). nil = success. `.repository` is not applied here — the
     /// window has no repo context, so those are shown as copy commands.
@@ -978,6 +1090,18 @@ final class AppState: ObservableObject {
         guard let store else { return }
         let url = AuditLog.logURL(directory: store.directory)
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Audit entries, newest first, for the in-app Audit page ([] if the store is unavailable).
+    func auditEntries() -> [AuditLog.Entry] {
+        guard let store else { return [] }
+        return AuditLog.entries(directory: store.directory).reversed()
+    }
+
+    /// 1-based line of the first broken hash-chain link, or nil if the chain verifies.
+    func auditFirstBrokenLink() -> Int? {
+        guard let store else { return nil }
+        return AuditLog.firstBrokenLink(directory: store.directory)
     }
 }
 

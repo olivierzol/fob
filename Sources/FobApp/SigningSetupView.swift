@@ -2,17 +2,14 @@ import AppKit
 import FobKit
 import SwiftUI
 
-/// The "Commit signing" window (opened from a key's ••• menu). Sets a fob key up for
+/// The "Commit signing" page (a pushed detail in the Configure window). Sets a fob key up for
 /// Touch ID-gated git commit signing: shows the public key to register on your git
 /// host and the git config (per-repo or global, with a one-click apply for global).
 /// Signing is routed to fob via a `gpg.ssh.program` wrapper, so it never touches
 /// SSH_AUTH_SOCK — other ssh agents and `git push` auth are unaffected. The one thing
 /// it does directly is the namespace restriction — fob's own policy.
 struct SigningSetupView: View {
-    static let windowID = "fob-signing-setup"
-
     @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
 
     @State private var info: AppState.SigningInfo?
     @State private var gitOnly = false
@@ -34,7 +31,7 @@ struct SigningSetupView: View {
             if let info { content(info) } else { Text("Key unavailable.").foregroundStyle(.secondary) }
         }
         .padding(22)
-        .frame(width: 500)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { load() }
         .onChange(of: state.signingSetupKey) { _ in load() }
     }
@@ -60,10 +57,14 @@ struct SigningSetupView: View {
         Text("Sign git commits with “\(keyName)” — Touch ID on each commit, and your host (GitHub, GitLab, …) shows *Verified*.")
             .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
-        Toggle(isOn: Binding(get: { gitOnly }, set: { gitOnly = $0; state.setGitSigningOnly($0, name: keyName) })) {
-            Text("Restrict this key to git commits only").font(.callout)
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle(isOn: Binding(get: { gitOnly }, set: { gitOnly = $0; state.setGitSigningOnly($0, name: keyName) })) {
+                Text("Only let this key sign git commits").font(.callout)
+            }
+            .toggleStyle(.checkbox)
+            Text("Rejects other SSHSIG signatures (e.g. `ssh-keygen -Y sign` in another namespace). Doesn't affect SSH login — that's governed by pinning.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .toggleStyle(.checkbox)
 
         step(1, "Register the public key on your git host as a Signing Key",
              "Key type: **Signing Key** — a separate entry from an Authentication key (GitHub keeps the two apart; on GitLab one key can be marked for both).")
@@ -116,7 +117,7 @@ struct SigningSetupView: View {
 
         HStack {
             Spacer()
-            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+            Button("Done") { state.configDetail = nil }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
         }
     }
 

@@ -2,15 +2,12 @@ import AppKit
 import FobKit
 import SwiftUI
 
-/// The "Set up a host" window: generate a key, write the `~/.ssh/config` entry, and hand
-/// the user the one command to run on the server. It deliberately does NOT run
-/// `ssh-copy-id` itself — ssh reads the server password from a TTY the app doesn't have.
+/// The "New key" page (the Configure window's first tab): a mode picker — Server · Git host ·
+/// Sign commits · Just a key — that generates a Secure Enclave key and hands off to the right
+/// flow. For a server it writes the `~/.ssh/config` entry and shows the one command to run on
+/// the box (it deliberately does NOT run `ssh-copy-id` — ssh needs a TTY the app doesn't have).
 struct HostSetupView: View {
-    static let windowID = "fob-host-setup"
-
     @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openWindow) private var openWindow
 
     private enum Mode: Hashable { case server, git, sign, bare }
 
@@ -46,7 +43,7 @@ struct HostSetupView: View {
             else { formView }
         }
         .padding(22)
-        .frame(width: 460)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Form
@@ -75,7 +72,6 @@ struct HostSetupView: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(mode == .server || mode == .git ? "Set up" : "Create") { setUp() }
                     .keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
                     .disabled(!formValid)
@@ -142,8 +138,24 @@ struct HostSetupView: View {
             Text("A dedicated Secure Enclave key for signing git commits. Next you'll register it on your git host as a **Signing Key** and configure git — Touch ID on each commit, no on-disk key to steal.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    Text("Provider").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                    Picker("Provider", selection: $provider) {
+                        Text("GitHub").tag(HostSetup.GitProvider.github)
+                        Text("GitLab").tag(HostSetup.GitProvider.gitlab)
+                        Text("Bitbucket").tag(HostSetup.GitProvider.bitbucket)
+                        Text("Codeberg").tag(HostSetup.GitProvider.codeberg)
+                        Text("Other…").tag(HostSetup.GitProvider.other)
+                    }
+                    .labelsHidden().frame(maxWidth: 200, alignment: .leading)
+                }
+                if provider == .other {
+                    field("Host", "git.example.com", $customHost)
+                }
                 field("Key name", "commit-signing", $keyName)
             }
+            Text("The provider is used to deep-link to its signing-key page and to verify locally. Signing works even without one.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("Touch ID only (currently enrolled fingerprints)", isOn: $touchIDOnly)
                 .toggleStyle(.checkbox).font(.callout)
         }
@@ -176,7 +188,7 @@ struct HostSetupView: View {
             commandBox(gen.pubLine)
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                Button("Done") { resetForm() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
         }
     }
@@ -228,11 +240,13 @@ struct HostSetupView: View {
         case .git: setUpGit(); return
         case .sign:
             guard let name = createKeyForName() else { return }
+            // A key created via Sign-commits is dedicated to signing — harden it to git-only
+            // by default (the signing-side analog of pinning; reversible on the next page).
+            state.setGitSigningOnly(true, name: name)
+            let host = providerHost()
             state.signingSetupKey = name
-            state.signingSetupHost = nil
-            dismiss()
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: SigningSetupView.windowID)
+            state.signingSetupHost = host.isEmpty ? nil : host
+            state.configDetail = .signing
             return
         case .bare:
             if createKeyForName() != nil { bareResult = state.lastGenerated }
@@ -259,9 +273,7 @@ struct HostSetupView: View {
         }
         error = nil
         state.migrateAlias = a
-        dismiss()
-        NSApp.activate(ignoringOtherApps: true)
-        openWindow(id: MigrateHostView.windowID)
+        state.configDetail = .migrateHost
     }
 
     // MARK: Result
@@ -290,9 +302,16 @@ struct HostSetupView: View {
 
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                Button("Done") { resetForm() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
         }
+    }
+
+    /// Return to a blank form after a completed server/bare setup (this is a tab now, not a
+    /// window that closes).
+    private func resetForm() {
+        result = nil; bareResult = nil
+        error = nil; pinMessage = nil; pinned = false; copied = false
     }
 
     private func pin(_ r: AppState.HostSetupResult) {
