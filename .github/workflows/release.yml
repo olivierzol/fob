@@ -1,14 +1,20 @@
 name: release
 
-# Builds, signs (Developer ID), notarizes, and publishes fob.app.
+# Builds, signs (Developer ID), notarizes, staples, and attaches fob.app to a GitHub
+# release — automatically on a `v*` tag push (also runnable manually from the Actions tab).
 #
-# MANUAL-ONLY (run it from the Actions tab). It is intentionally NOT triggered by tag
-# pushes: releases are currently cut locally with Scripts/release.sh, and the CI path
-# first needs these repo secrets configured — DEVELOPER_ID_CERT_P12,
-# DEVELOPER_ID_CERT_PASSWORD, KEYCHAIN_PASSWORD, AC_API_KEY_P8, AC_API_KEY_ID,
-# AC_API_ISSUER_ID. To enable fully-automated tag releases later, add those secrets
-# and restore the `push: { tags: ["v*"] }` trigger.
+# Requires these repo secrets (Settings → Secrets and variables → Actions):
+#   DEVELOPER_ID_CERT_P12, DEVELOPER_ID_CERT_PASSWORD, KEYCHAIN_PASSWORD,
+#   AC_API_KEY_P8, AC_API_KEY_ID, AC_API_ISSUER_ID  (+ optional DEVELOPER_ID_IDENTITY).
+# See docs/RELEASING.md. Until they're set, the run fails at the signing step.
+#
+# What CI does NOT do (on purpose): it publishes a DRAFT so you review the notes and
+# choose when it goes live, and it does not bump the Homebrew tap — the tap commit is
+# kept fob-signed, which needs the Secure Enclave (unavailable in CI). Bump the tap
+# locally with the sha256 this run reports (shown in the job summary).
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -58,15 +64,28 @@ jobs:
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
         run: ./Scripts/release.sh
 
-      - name: Publish GitHub release
+      # Draft so you review the auto-generated notes and publish when ready. The
+      # notarized zip is already attached, so there's no manual artifact upload.
+      - name: Draft GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             "${{ steps.build.outputs.zip }}" \
-            --title "$GITHUB_REF_NAME" --generate-notes
+            --title "$GITHUB_REF_NAME" --generate-notes --draft
 
-      # The cask lives in your tap repo (olivierzol/homebrew-fob). Bump it with these:
-      - name: Cask bump values
+      # The cask lives in the tap repo (olivierzol/homebrew-fob) and its commit is
+      # fob-signed, so bump it locally with the values below — not from CI.
+      - name: Tap-bump instructions
         run: |
-          echo "::notice::Update Casks/fob.rb in your tap to version ${{ steps.build.outputs.version }}, sha256 ${{ steps.build.outputs.sha256 }}"
+          {
+            echo "### fob ${{ steps.build.outputs.version }} — release drafted ✅"
+            echo ""
+            echo "1. Review the **draft** release's notes and **Publish** it."
+            echo "2. Bump the tap cask (\`Casks/fob.rb\`) locally, then push a fob-signed commit:"
+            echo ""
+            echo '```'
+            echo "version \"${{ steps.build.outputs.version }}\""
+            echo "sha256  \"${{ steps.build.outputs.sha256 }}\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

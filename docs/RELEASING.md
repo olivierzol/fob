@@ -51,16 +51,30 @@ Replace `olivierzol` in the cask (three places) with your GitHub account/org.
 
 ## Cutting a release
 
+Once the secrets above are set, a tag push does the heavy lifting in CI:
+
 1. Bump `VERSION` / `BUILD_NUMBER` in `Scripts/build-app.sh`.
-2. Tag and push:
+2. Commit and push a **signed** release commit + tag:
    ```sh
-   git tag v0.3.0
-   git push origin v0.3.0
+   git commit -am "Release v0.3.0"
+   git tag -s v0.3.0 -m "fob v0.3.0"
+   git push origin main v0.3.0
    ```
-3. The `release` workflow builds, signs, notarizes, staples, and attaches
-   `fob-<version>.zip` to a GitHub release. It prints the new `version` and
-   `sha256` as a workflow notice.
-4. Update `version` and `sha256` in your tap's `Casks/fob.rb` and commit.
+3. The tag push triggers the `release` workflow: it builds, signs, notarizes,
+   staples, and attaches `fob-<version>.zip` to a **draft** GitHub release. The
+   job summary shows the `version` and `sha256`. Review the auto-generated notes
+   and **Publish** the release.
+4. Bump `version` + `sha256` (use the sha256 from step 3 — notarization changes
+   the zip, so it differs from any local build) in your tap's `Casks/fob.rb` and
+   push a **fob-signed** commit. The tap bump stays local because its commit is
+   signed with the Secure Enclave key, which CI can't reach.
+
+> CI publishes a **draft** (not live) and does **not** touch the tap — so the
+> release only goes public when you publish it, and the tap commit stays signed.
+> To make CI auto-publish instead, drop `--draft` from the workflow's release step.
+
+Prefer to cut it entirely locally? The [local flow](#building-a-signed-release-locally)
+below still works and is the fallback if CI is unavailable.
 
 ## Building a signed release locally
 
