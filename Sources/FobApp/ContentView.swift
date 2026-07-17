@@ -58,6 +58,7 @@ struct ContentView: View {
 
     @State private var openMenuKey: String?
     @State private var menuUsage: AppState.KeyUsage?
+    @State private var updateCopied = false
 
     private var t: Theme { Theme.current(scheme) }
     private let width: CGFloat = 360
@@ -66,6 +67,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             divider
+            if state.updateAvailable != nil { updateBanner; divider }
             keysSection
             divider
             newKeySection
@@ -116,6 +118,30 @@ struct ContentView: View {
                 inlineError(err, systemImage: nil)
             }
         }
+    }
+
+    private var updateBanner: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "arrow.up.circle.fill").foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Update available").font(.system(size: 12, weight: .semibold)).foregroundStyle(t.text)
+                if let u = state.updateAvailable {
+                    Text("\(state.appVersion.map { "v\($0) → " } ?? "")v\(u.version)")
+                        .font(.system(size: 11)).foregroundStyle(t.sub)
+                }
+            }
+            Spacer()
+            Button("Notes") { if let u = state.updateAvailable { NSWorkspace.shared.open(u.url) } }
+                .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
+            Button(updateCopied ? "Copied" : "Copy `brew upgrade`") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("brew upgrade --cask fob", forType: .string)
+                updateCopied = true
+            }
+            .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.accent.opacity(0.08))
     }
 
     private func inlineError(_ message: String, systemImage: String?) -> some View {

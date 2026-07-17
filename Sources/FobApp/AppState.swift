@@ -23,6 +23,17 @@ final class AppState: ObservableObject {
     @Published private(set) var keys: [KeyInfo] = []
     @Published private(set) var feed: [AgentEvent] = []
     @Published private(set) var launchAtLogin = false
+    /// A newer release than the running build, if the update check found one.
+    struct AvailableUpdate: Equatable { let version: String; let url: URL }
+    @Published private(set) var updateAvailable: AvailableUpdate?
+    /// Whether fob checks GitHub for new releases (once/day, opt-out). Persisted.
+    @Published var checkForUpdates: Bool = (UserDefaults.standard.object(forKey: "fob.checkForUpdates") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(checkForUpdates, forKey: "fob.checkForUpdates")
+            if checkForUpdates { Task { await checkForUpdatesNow(force: true) } }
+            else { updateAvailable = nil }
+        }
+    }
     /// Non-nil when the agent could not start (e.g. another agent holds the lock).
     @Published private(set) var fatalError: String?
     /// Transient error from the most recent key action, shown then cleared.
@@ -72,6 +83,42 @@ final class AppState: ObservableObject {
         refreshKeys()
         refreshLoginItem()
         startAgent()
+        Task { await checkForUpdatesNow() }
+    }
+
+    // MARK: - Update check (opt-out; queries GitHub's public releases API only)
+
+    /// The running app's version (CFBundleShortVersionString), or nil outside a bundle.
+    var appVersion: String? { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String }
+
+    private static let releasesAPI = URL(string: "https://api.github.com/repos/olivierzol/fob/releases/latest")!
+    private static let releasesPage = URL(string: "https://github.com/olivierzol/fob/releases/latest")!
+    private let lastUpdateCheckKey = "fob.lastUpdateCheck"
+
+    /// Check GitHub for a newer release and set `updateAvailable`. Throttled to ~once/day
+    /// unless `force`. Silent on any failure (it's a background nicety) and a no-op when the
+    /// preference is off or the running version is unknown. Sends no data — a plain GET of the
+    /// public "latest release" endpoint.
+    func checkForUpdatesNow(force: Bool = false) async {
+        guard checkForUpdates, let current = appVersion else { return }
+        let defaults = UserDefaults.standard
+        if !force, let last = defaults.object(forKey: lastUpdateCheckKey) as? Date,
+           Date().timeIntervalSince(last) < 24 * 3600 { return }
+        var req = URLRequest(url: Self.releasesAPI)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 10
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tag = json["tag_name"] as? String else { return }
+        defaults.set(Date(), forKey: lastUpdateCheckKey)
+        if UpdateCheck.isNewer(tag, than: current) {
+            let url = (json["html_url"] as? String).flatMap(URL.init) ?? Self.releasesPage
+            updateAvailable = AvailableUpdate(
+                version: tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV ")), url: url)
+        } else {
+            updateAvailable = nil
+        }
     }
 
     // MARK: - Agent lifecycle
