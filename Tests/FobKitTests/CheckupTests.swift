@@ -199,6 +199,51 @@ final class CheckupTests: XCTestCase {
         XCTAssertNil(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ecdsa-sha2-nistp256 AAAABBB"))
     }
 
+    // MARK: - KeyUsageResolver (per-key role resolution)
+
+    func testKeyUsageResolver() {
+        let config = """
+        Host github-work
+          HostName github.com
+          User git
+          IdentityFile ~/.ssh/fob_work.pub
+        Host space
+          HostName 10.0.0.1
+          User oliv
+          IdentityFile ~/.ssh/fob_space.pub
+        """
+        let blocks = HostSetup.listHostBlocks(in: config)
+
+        // Signing-only key (in signingBases, referenced by no host block).
+        let signing = KeyUsageResolver.resolve(name: "sign", signingBases: ["fob_sign.pub"], blocks: blocks)
+        XCTAssertTrue(signing.isSigningOnly)
+        XCTAssertFalse(signing.canOfferSigning)      // already signs
+
+        // Git-service auth key → offer signing.
+        let work = KeyUsageResolver.resolve(name: "work", signingBases: [], blocks: blocks)
+        XCTAssertEqual(work.authHosts, ["github-work"])
+        XCTAssertEqual(work.authGitHosts, ["github-work"])
+        XCTAssertTrue(work.canOfferSigning)
+        XCTAssertFalse(work.isSigningOnly)
+
+        // Plain server auth key → NOT a git host → don't offer signing.
+        let space = KeyUsageResolver.resolve(name: "space", signingBases: [], blocks: blocks)
+        XCTAssertEqual(space.authHosts, ["space"])
+        XCTAssertEqual(space.authGitHosts, [])
+        XCTAssertFalse(space.canOfferSigning)
+
+        // Both signing AND a git-host auth entry → not signing-only.
+        let both = KeyUsageResolver.resolve(name: "work", signingBases: ["fob_work.pub"], blocks: blocks)
+        XCTAssertTrue(both.signsCommits)
+        XCTAssertEqual(both.authHosts, ["github-work"])
+        XCTAssertFalse(both.isSigningOnly)
+
+        // Bare/unused key → can offer signing.
+        let bare = KeyUsageResolver.resolve(name: "nope", signingBases: [], blocks: blocks)
+        XCTAssertTrue(bare.isUnused)
+        XCTAssertTrue(bare.canOfferSigning)
+    }
+
     // MARK: - scanConfig
 
     func testScanFlagsRiskyDirectives() {

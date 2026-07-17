@@ -20,8 +20,9 @@ struct ConfigWindow: View {
             header
             Divider()
             content
+            Spacer(minLength: 0)   // top-align pages so short ones (Settings) don't float centered
         }
-        .frame(width: 560)
+        .frame(minWidth: 560, maxWidth: 560, minHeight: 460, alignment: .top)
     }
 
     @ViewBuilder

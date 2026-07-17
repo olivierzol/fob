@@ -387,62 +387,61 @@ final class AppState: ObservableObject {
         return GitConfig.parse((try? String(contentsOf: url, encoding: .utf8)) ?? "")
     }
 
-    /// What a key is actually used for, so the Keys page can tailor its row (e.g. hide
-    /// "Sign commits…" for a key that already signs, or "Pin" for a signing-only key).
-    struct KeyUsage: Equatable {
-        let signsCommits: Bool     // it's the git signing key (global or any includeIf identity)
-        let authHosts: [String]    // ~/.ssh/config aliases whose IdentityFile is this fob key
-        let authGitHosts: [String] // subset of authHosts that are git services (GitHub/GitLab/…)
-        var isSigningOnly: Bool { signsCommits && authHosts.isEmpty }
-        var isUnused: Bool { !signsCommits && authHosts.isEmpty }
-        /// Commit signing is a git concept — offer it for git-service keys or a bare key, not
-        /// for a plain server-login key where it's meaningless.
-        var canOfferSigning: Bool { !signsCommits && (isUnused || !authGitHosts.isEmpty) }
-    }
+    /// UI-facing alias for FobKit's pure `KeyUsage`; resolution lives in `KeyUsageResolver`.
+    typealias KeyUsage = FobKit.KeyUsage
 
-    func keyUsage(name: String) -> KeyUsage {
-        let inputs = usageInputs()
-        return usage(for: name, inputs: inputs)
+    func keyUsage(name: String) async -> KeyUsage {
+        let inputs = await usageInputs()
+        return KeyUsageResolver.resolve(name: name, signingBases: inputs.signingBases, blocks: inputs.blocks)
     }
 
     /// Usage for every key in one shot — shares the git/ssh reads across all keys so the
-    /// Keys tab doesn't spawn a subprocess storm (the source of the tab-open lag).
-    func keyUsages() -> [String: KeyUsage] {
-        let inputs = usageInputs()
+    /// Keys tab doesn't spawn a subprocess storm. Runs the git reads off the main actor so
+    /// opening the tab never blocks the UI (even on a slow disk).
+    func keyUsages() async -> [String: KeyUsage] {
+        let inputs = await usageInputs()
         var out: [String: KeyUsage] = [:]
-        for key in keys { out[key.name] = usage(for: key.name, inputs: inputs) }
+        for key in keys {
+            out[key.name] = KeyUsageResolver.resolve(name: key.name, signingBases: inputs.signingBases, blocks: inputs.blocks)
+        }
         return out
     }
 
     /// The shared, key-independent reads: the set of configured signing-key basenames
-    /// (global + every includeIf identity) and the parsed ssh `Host` blocks. Computed once.
+    /// (global + every includeIf identity) and the parsed ssh `Host` blocks. The git reads
+    /// run off the main actor (via `runGitAsync`); the parse is pure.
     private struct UsageInputs { let signingBases: Set<String>; let blocks: [HostSetup.HostBlock] }
-    private func usageInputs() -> UsageInputs {
+    private func usageInputs() async -> UsageInputs {
         func base(_ p: String) -> String {
             (p.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
         }
         var signing = Set<String>()
-        let g = base(runGitSync(["config", "--global", "user.signingkey"]))
+        let g = base(await runGitAsync(["config", "--global", "user.signingkey"]))
         if !g.isEmpty { signing.insert(g) }
-        for inc in GitConfig.parseIncludeEntries(runGitSync(["config", "--global", "--get-regexp", "^includeif\\."])) {
-            let b = base(runGitSync(["config", "--file", (inc.path as NSString).expandingTildeInPath, "user.signingkey"]))
+        for inc in GitConfig.parseIncludeEntries(await runGitAsync(["config", "--global", "--get-regexp", "^includeif\\."])) {
+            let b = base(await runGitAsync(["config", "--file", (inc.path as NSString).expandingTildeInPath, "user.signingkey"]))
             if !b.isEmpty { signing.insert(b) }
         }
         let cfg = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
         return UsageInputs(signingBases: signing, blocks: HostSetup.listHostBlocks(in: cfg))
     }
 
-    private func usage(for name: String, inputs: UsageInputs) -> KeyUsage {
-        let pubBase = "fob_\(name).pub"
-        let mine = inputs.blocks.filter {
-            $0.parsed.identityFiles.contains { ($0 as NSString).lastPathComponent == pubBase }
+    /// Off-main-actor `git` read (stderr discarded), returning stdout or "" on failure — the
+    /// async sibling of `runGitSync`, so usage gathering doesn't block the UI.
+    private func runGitAsync(_ args: [String]) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                process.arguments = args
+                let out = Pipe(); process.standardOutput = out; process.standardError = Pipe()
+                guard (try? process.run()) != nil else { continuation.resume(returning: ""); return }
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                continuation.resume(returning: process.terminationStatus == 0
+                    ? String(decoding: data, as: UTF8.self) : "")
+            }
         }
-        let gitHosts = mine
-            .filter { HostSetup.isGitHost(hostName: $0.parsed.hostName ?? $0.alias, user: $0.parsed.user) }
-            .map(\.alias)
-        return KeyUsage(signsCommits: inputs.signingBases.contains(pubBase),
-                        authHosts: Array(Set(mine.map(\.alias))).sorted(),
-                        authGitHosts: Array(Set(gitHosts)).sorted())
     }
 
     /// Create (or reuse) the fob key, export its public key, and install it on the server
@@ -907,10 +906,10 @@ final class AppState: ObservableObject {
     /// Secure default for the signing page: harden a dedicated signing key (no SSH-auth role)
     /// to git-only the first time its signing config is opened, unless the user has already
     /// made an explicit namespace choice. Returns the resulting git-only state for the toggle.
-    func autoHardenSigningIfEligible(name: String) -> Bool {
+    func autoHardenSigningIfEligible(name: String) async -> Bool {
         guard let store else { return false }
         let policy = store.policy(name: name)
-        let signingOnly = keyUsage(name: name).authHosts.isEmpty
+        let signingOnly = await keyUsage(name: name).authHosts.isEmpty
         if policy.shouldAutoHardenSigning(isSigningOnly: signingOnly) {
             setGitSigningOnly(true, name: name, explicit: false)
             return true
