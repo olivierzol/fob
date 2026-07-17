@@ -49,7 +49,7 @@ struct KeysView: View {
     }
 
     private func loadUsage() {
-        usage = state.keyUsages()
+        Task { usage = await state.keyUsages() }
     }
 
     private func row(_ key: KeyInfo) -> some View {
