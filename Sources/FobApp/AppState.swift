@@ -42,9 +42,11 @@ final class AppState: ObservableObject {
     // are reached from other flows/the popover, so they render as a pushed detail over the
     // current tab rather than as tabs of their own.
     enum ConfigTab: Hashable { case newKey, keys, migrate, checkup, audit, settings }
-    enum ConfigDetail: Equatable { case signing, migrateHost }
+    enum ConfigDetail: Equatable { case signing, migrateHost, rotate }
     @Published var configTab: ConfigTab = .newKey
     @Published var configDetail: ConfigDetail?
+    /// The key the Rotate page operates on (set before routing to `.rotate`).
+    @Published var rotateKey: String?
 
     /// Set the config window's route, then the caller opens the window. Detail routes reuse
     /// the existing `signingSetupKey`/`migrateAlias` fields as their parameters (set those
@@ -385,62 +387,61 @@ final class AppState: ObservableObject {
         return GitConfig.parse((try? String(contentsOf: url, encoding: .utf8)) ?? "")
     }
 
-    /// What a key is actually used for, so the Keys page can tailor its row (e.g. hide
-    /// "Sign commits…" for a key that already signs, or "Pin" for a signing-only key).
-    struct KeyUsage: Equatable {
-        let signsCommits: Bool     // it's the git signing key (global or any includeIf identity)
-        let authHosts: [String]    // ~/.ssh/config aliases whose IdentityFile is this fob key
-        let authGitHosts: [String] // subset of authHosts that are git services (GitHub/GitLab/…)
-        var isSigningOnly: Bool { signsCommits && authHosts.isEmpty }
-        var isUnused: Bool { !signsCommits && authHosts.isEmpty }
-        /// Commit signing is a git concept — offer it for git-service keys or a bare key, not
-        /// for a plain server-login key where it's meaningless.
-        var canOfferSigning: Bool { !signsCommits && (isUnused || !authGitHosts.isEmpty) }
-    }
+    /// UI-facing alias for FobKit's pure `KeyUsage`; resolution lives in `KeyUsageResolver`.
+    typealias KeyUsage = FobKit.KeyUsage
 
-    func keyUsage(name: String) -> KeyUsage {
-        let inputs = usageInputs()
-        return usage(for: name, inputs: inputs)
+    func keyUsage(name: String) async -> KeyUsage {
+        let inputs = await usageInputs()
+        return KeyUsageResolver.resolve(name: name, signingBases: inputs.signingBases, blocks: inputs.blocks)
     }
 
     /// Usage for every key in one shot — shares the git/ssh reads across all keys so the
-    /// Keys tab doesn't spawn a subprocess storm (the source of the tab-open lag).
-    func keyUsages() -> [String: KeyUsage] {
-        let inputs = usageInputs()
+    /// Keys tab doesn't spawn a subprocess storm. Runs the git reads off the main actor so
+    /// opening the tab never blocks the UI (even on a slow disk).
+    func keyUsages() async -> [String: KeyUsage] {
+        let inputs = await usageInputs()
         var out: [String: KeyUsage] = [:]
-        for key in keys { out[key.name] = usage(for: key.name, inputs: inputs) }
+        for key in keys {
+            out[key.name] = KeyUsageResolver.resolve(name: key.name, signingBases: inputs.signingBases, blocks: inputs.blocks)
+        }
         return out
     }
 
     /// The shared, key-independent reads: the set of configured signing-key basenames
-    /// (global + every includeIf identity) and the parsed ssh `Host` blocks. Computed once.
+    /// (global + every includeIf identity) and the parsed ssh `Host` blocks. The git reads
+    /// run off the main actor (via `runGitAsync`); the parse is pure.
     private struct UsageInputs { let signingBases: Set<String>; let blocks: [HostSetup.HostBlock] }
-    private func usageInputs() -> UsageInputs {
+    private func usageInputs() async -> UsageInputs {
         func base(_ p: String) -> String {
             (p.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
         }
         var signing = Set<String>()
-        let g = base(runGitSync(["config", "--global", "user.signingkey"]))
+        let g = base(await runGitAsync(["config", "--global", "user.signingkey"]))
         if !g.isEmpty { signing.insert(g) }
-        for inc in GitConfig.parseIncludeEntries(runGitSync(["config", "--global", "--get-regexp", "^includeif\\."])) {
-            let b = base(runGitSync(["config", "--file", (inc.path as NSString).expandingTildeInPath, "user.signingkey"]))
+        for inc in GitConfig.parseIncludeEntries(await runGitAsync(["config", "--global", "--get-regexp", "^includeif\\."])) {
+            let b = base(await runGitAsync(["config", "--file", (inc.path as NSString).expandingTildeInPath, "user.signingkey"]))
             if !b.isEmpty { signing.insert(b) }
         }
         let cfg = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
         return UsageInputs(signingBases: signing, blocks: HostSetup.listHostBlocks(in: cfg))
     }
 
-    private func usage(for name: String, inputs: UsageInputs) -> KeyUsage {
-        let pubBase = "fob_\(name).pub"
-        let mine = inputs.blocks.filter {
-            $0.parsed.identityFiles.contains { ($0 as NSString).lastPathComponent == pubBase }
+    /// Off-main-actor `git` read (stderr discarded), returning stdout or "" on failure — the
+    /// async sibling of `runGitSync`, so usage gathering doesn't block the UI.
+    private func runGitAsync(_ args: [String]) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                process.arguments = args
+                let out = Pipe(); process.standardOutput = out; process.standardError = Pipe()
+                guard (try? process.run()) != nil else { continuation.resume(returning: ""); return }
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                continuation.resume(returning: process.terminationStatus == 0
+                    ? String(decoding: data, as: UTF8.self) : "")
+            }
         }
-        let gitHosts = mine
-            .filter { HostSetup.isGitHost(hostName: $0.parsed.hostName ?? $0.alias, user: $0.parsed.user) }
-            .map(\.alias)
-        return KeyUsage(signsCommits: inputs.signingBases.contains(pubBase),
-                        authHosts: Array(Set(mine.map(\.alias))).sorted(),
-                        authGitHosts: Array(Set(gitHosts)).sorted())
     }
 
     /// Create (or reuse) the fob key, export its public key, and install it on the server
@@ -905,10 +906,10 @@ final class AppState: ObservableObject {
     /// Secure default for the signing page: harden a dedicated signing key (no SSH-auth role)
     /// to git-only the first time its signing config is opened, unless the user has already
     /// made an explicit namespace choice. Returns the resulting git-only state for the toggle.
-    func autoHardenSigningIfEligible(name: String) -> Bool {
+    func autoHardenSigningIfEligible(name: String) async -> Bool {
         guard let store else { return false }
         let policy = store.policy(name: name)
-        let signingOnly = keyUsage(name: name).authHosts.isEmpty
+        let signingOnly = await keyUsage(name: name).authHosts.isEmpty
         if policy.shouldAutoHardenSigning(isSigningOnly: signingOnly) {
             setGitSigningOnly(true, name: name, explicit: false)
             return true
@@ -957,6 +958,80 @@ final class AppState: ObservableObject {
         if case .identity(let id) = scope, let e = id.email { return e }
         let e = runGitSync(["config", "--global", "user.email"]).trimmingCharacters(in: .whitespacesAndNewlines)
         return e.isEmpty ? nil : e
+    }
+
+    // MARK: - Key rotation (v1: signing keys)
+
+    /// What step 1 of a signing-key rotation produces: a fresh key (under a temp name) whose
+    /// public key the user registers on their git host before we swap.
+    struct RotationPrep: Equatable { let pubLine: String; let pubPath: String }
+    enum RotationPrepResult: Equatable { case ready(RotationPrep); case failed(String) }
+
+    private func rotationTempName(_ name: String) -> String { "\(name).rotating" }
+
+    /// Step 1 — create a fresh Secure Enclave key (temp name) and export its public key, so
+    /// the user can add it on their git host as a Signing Key alongside the old one before the
+    /// swap. Returns the new pub to register, or an error.
+    func prepareSigningRotation(name: String, requireBiometry: Bool) -> RotationPrepResult {
+        guard let store else { return .failed("Key store unavailable.") }
+        let temp = rotationTempName(name)
+        if (try? store.find(name: temp)) != nil { try? store.remove(name: temp) } // clear an abandoned attempt
+        do {
+            _ = try store.create(name: temp, requireBiometry: requireBiometry)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        guard let info = signingInfo(for: temp) else {
+            try? store.remove(name: temp)
+            return .failed("Couldn't export the new key.")
+        }
+        return .ready(RotationPrep(pubLine: info.pubLine, pubPath: info.pubPath))
+    }
+
+    /// Step 2 — swap the new key into the old key's name so every reference keeps working
+    /// (`user.signingkey = ~/.ssh/fob_<name>.pub` is unchanged, now the new key), carry the
+    /// old policy over, and replace the old key's allowed_signers line with the new one's.
+    /// The old key is destroyed only after the new one is safely in place. nil = success.
+    func finalizeSigningRotation(name: String) -> String? {
+        guard let store else { return "Key store unavailable." }
+        let temp = rotationTempName(name)
+        guard (try? store.find(name: temp)) != nil else { return "No rotation in progress for “\(name)”." }
+        let retired = "\(name).retired"
+        let signersURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/allowed_signers")
+        let signersText = (try? String(contentsOf: signersURL, encoding: .utf8)) ?? ""
+        // Carry the old allowed_signers principal (email) forward; fall back to global user.email.
+        let email = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
+            ?? runGitSync(["config", "--global", "user.email"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            copyPolicy(from: name, to: temp)               // new key inherits pin/reuse/namespaces
+            try store.rename(from: name, to: retired)      // move old aside (recoverable)
+            try store.rename(from: temp, to: name)         // new key takes the name
+            try store.remove(name: retired)                // destroy the old enclave key
+        } catch {
+            return error.localizedDescription
+        }
+        guard let info = signingInfo(for: name) else { return "Rotated, but couldn't re-export the key." }
+        // Swap the allowed_signers line: drop the old key's, add the new key's (same comment).
+        var text = signersText
+        if let pruned = SSHCheckup.AllowedSigners.removing(text, fobKeyName: name) { text = pruned }
+        if !email.isEmpty, let updated = SSHCheckup.AllowedSigners.appending(text, email: email, pubLine: info.pubLine) {
+            text = updated
+        }
+        try? Data(text.utf8).write(to: signersURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: signersURL.path)
+        refreshKeys()
+        return nil
+    }
+
+    /// Abandon a prepared-but-not-finalized rotation (deletes the temp key).
+    func cancelRotation(name: String) {
+        try? store?.remove(name: rotationTempName(name))
+    }
+
+    /// Copy a key's whole policy (pin/reuse/namespaces + choice marker) to another name.
+    private func copyPolicy(from: String, to: String) {
+        guard let store else { return }
+        try? store.savePolicy(store.policy(name: from), name: to)
     }
 
     /// Append an entry to ~/.ssh/allowed_signers (idempotent) so signed commits verify locally.

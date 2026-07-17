@@ -144,6 +144,9 @@ final class CheckupTests: XCTestCase {
         // orphans = fob names not in the live set (email lines are never counted).
         XCTAssertEqual(SSHCheckup.AllowedSigners.orphanedFobNames(file, liveNames: ["keep"]), ["old"])
         XCTAssertEqual(SSHCheckup.AllowedSigners.orphanedFobNames(file, liveNames: ["old", "keep"]), [])
+        // principal() returns the first column of the matching fob line (for rotation to carry).
+        XCTAssertEqual(SSHCheckup.AllowedSigners.principal(file, fobKeyName: "keep"), "me@x.com")
+        XCTAssertNil(SSHCheckup.AllowedSigners.principal(file, fobKeyName: "absent"))
     }
 
     func testAllowedSignersOrphanFinding() {
@@ -194,6 +197,51 @@ final class CheckupTests: XCTestCase {
         XCTAssertEqual(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ecdsa-sha2-nistp256 AAAABBB fob:github-feedly-signing"), "github-feedly-signing")
         XCTAssertNil(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ssh-ed25519 AAAABBB me@host"))
         XCTAssertNil(SSHCheckup.AllowedSigners.fobKeyName(fromPubLine: "ecdsa-sha2-nistp256 AAAABBB"))
+    }
+
+    // MARK: - KeyUsageResolver (per-key role resolution)
+
+    func testKeyUsageResolver() {
+        let config = """
+        Host github-work
+          HostName github.com
+          User git
+          IdentityFile ~/.ssh/fob_work.pub
+        Host space
+          HostName 10.0.0.1
+          User oliv
+          IdentityFile ~/.ssh/fob_space.pub
+        """
+        let blocks = HostSetup.listHostBlocks(in: config)
+
+        // Signing-only key (in signingBases, referenced by no host block).
+        let signing = KeyUsageResolver.resolve(name: "sign", signingBases: ["fob_sign.pub"], blocks: blocks)
+        XCTAssertTrue(signing.isSigningOnly)
+        XCTAssertFalse(signing.canOfferSigning)      // already signs
+
+        // Git-service auth key → offer signing.
+        let work = KeyUsageResolver.resolve(name: "work", signingBases: [], blocks: blocks)
+        XCTAssertEqual(work.authHosts, ["github-work"])
+        XCTAssertEqual(work.authGitHosts, ["github-work"])
+        XCTAssertTrue(work.canOfferSigning)
+        XCTAssertFalse(work.isSigningOnly)
+
+        // Plain server auth key → NOT a git host → don't offer signing.
+        let space = KeyUsageResolver.resolve(name: "space", signingBases: [], blocks: blocks)
+        XCTAssertEqual(space.authHosts, ["space"])
+        XCTAssertEqual(space.authGitHosts, [])
+        XCTAssertFalse(space.canOfferSigning)
+
+        // Both signing AND a git-host auth entry → not signing-only.
+        let both = KeyUsageResolver.resolve(name: "work", signingBases: ["fob_work.pub"], blocks: blocks)
+        XCTAssertTrue(both.signsCommits)
+        XCTAssertEqual(both.authHosts, ["github-work"])
+        XCTAssertFalse(both.isSigningOnly)
+
+        // Bare/unused key → can offer signing.
+        let bare = KeyUsageResolver.resolve(name: "nope", signingBases: [], blocks: blocks)
+        XCTAssertTrue(bare.isUnused)
+        XCTAssertTrue(bare.canOfferSigning)
     }
 
     // MARK: - scanConfig

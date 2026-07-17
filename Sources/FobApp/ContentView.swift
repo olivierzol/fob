@@ -282,9 +282,11 @@ struct ContentView: View {
     private func toggleMenu(_ name: String) {
         let opening = openMenuKey != name
         openMenuKey = opening ? name : nil
-        // Compute usage once, only for the key whose menu is opening, so the dropdown can
-        // scope the signing item (git concept) without pricing it into every key's render.
-        menuUsage = opening ? state.keyUsage(name: name) : nil
+        // Compute usage (off the main actor) only for the key whose menu is opening, so the
+        // dropdown can scope the signing item without blocking the UI. The signing row fills
+        // in a moment after the menu appears.
+        menuUsage = nil
+        if opening { Task { if openMenuKey == name { menuUsage = await state.keyUsage(name: name) } } }
     }
 
     @ViewBuilder

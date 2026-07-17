@@ -214,6 +214,32 @@ final class SecurityTests: XCTestCase {
         }
     }
 
+    func testRenameMovesFilesAndPolicy() throws {
+        // rename is purely file/policy ops (the enclave blob is opaque and just moves), so we
+        // test it with stand-in files — no real Secure Enclave key needed.
+        let store = try makeTempStore()
+        let dir = store.keysDirectory
+        let fm = FileManager.default
+        try Data("opaque-blob".utf8).write(to: dir.appendingPathComponent("rot.key"))
+        try Data("ecdsa-sha2-nistp256 AAAABBB fob:rot\n".utf8).write(to: dir.appendingPathComponent("rot.pub"))
+        try store.savePolicy(KeyPolicy(reuseSeconds: 30, namespaceChoiceMade: true), name: "rot")
+
+        try store.rename(from: "rot", to: "rot2")
+        XCTAssertFalse(fm.fileExists(atPath: dir.appendingPathComponent("rot.key").path)) // old gone
+        XCTAssertTrue(fm.fileExists(atPath: dir.appendingPathComponent("rot2.key").path)) // blob moved
+        let pub = try String(contentsOf: dir.appendingPathComponent("rot2.pub"), encoding: .utf8)
+        XCTAssertTrue(pub.contains("fob:rot2"))            // comment retargeted
+        XCTAssertFalse(pub.contains("fob:rot\n"))          // old exact comment gone
+        XCTAssertTrue(pub.contains("AAAABBB"))             // same blob preserved
+        XCTAssertEqual(store.policy(name: "rot2").reuseSeconds, 30)          // policy carried over
+        XCTAssertEqual(store.policy(name: "rot2").namespaceChoiceMade, true)
+        XCTAssertTrue(store.policy(name: "rot").isDefault)                   // old policy cleared
+
+        XCTAssertThrowsError(try store.rename(from: "absent", to: "x"))      // source missing
+        try Data("x".utf8).write(to: dir.appendingPathComponent("occupied.key"))
+        XCTAssertThrowsError(try store.rename(from: "rot2", to: "occupied")) // target exists
+    }
+
     private func makeTempStore() throws -> KeyStore {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("fobtest-\(UUID().uuidString)")

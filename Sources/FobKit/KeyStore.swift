@@ -203,6 +203,38 @@ public struct KeyStore {
         }
         try? policyStore.remove(name: name) // also clear a keychain-backed policy
     }
+
+    /// Rename a key in place: move its enclave blob + policy, and retarget the in-store
+    /// public-key line's `fob:<name>` comment. Used by rotation to swap a freshly created key
+    /// into the retired key's name so every reference (gitconfig `user.signingkey =
+    /// ~/.ssh/fob_<name>.pub`) keeps working unchanged. Purely file/policy operations — it
+    /// does NOT touch or reconstitute the Secure Enclave key (the blob is opaque and just
+    /// moves), so it works without the enclave being reachable. Throws if `from` is missing or
+    /// `to` already exists. The exported ~/.ssh/fob_<name>.pub is the caller's to refresh.
+    public func rename(from: String, to: String) throws {
+        guard Self.isValidName(to) else { throw KeyStoreError.invalidName(to) }
+        let fm = FileManager.default
+        let fromKey = keysDirectory.appendingPathComponent("\(from).key")
+        let toKey = keysDirectory.appendingPathComponent("\(to).key")
+        guard fm.fileExists(atPath: fromKey.path) else { throw KeyStoreError.notFound(from) }
+        guard !fm.fileExists(atPath: toKey.path) else { throw KeyStoreError.keyExists(to) }
+        // Move the (opaque) enclave blob.
+        try fm.moveItem(at: fromKey, to: toKey)
+        // Migrate the policy through the store (handles both file- and keychain-backed).
+        if let policy = try? policyStore.load(name: from) {
+            try policyStore.save(policy, name: to)
+            try policyStore.remove(name: from)
+        }
+        // Move the in-store public key, retargeting its `fob:<name>` comment textually — the
+        // base64 blob is unchanged, so no enclave access is needed.
+        let fromPub = keysDirectory.appendingPathComponent("\(from).pub")
+        if let text = try? String(contentsOf: fromPub, encoding: .utf8) {
+            let rewritten = text.replacingOccurrences(of: "fob:\(from)", with: "fob:\(to)")
+            try? Data(rewritten.utf8).write(
+                to: keysDirectory.appendingPathComponent("\(to).pub"), options: .atomic)
+            try? fm.removeItem(at: fromPub)
+        }
+    }
 }
 
 public enum KeyStoreError: LocalizedError {
