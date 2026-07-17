@@ -164,6 +164,14 @@ final class AppState: ObservableObject {
             _ = try? HostSetup.backupAndWriteConfig(new, at: sshConfigURL)
             configRevision += 1
         }
+        // Drop this key's own allowed_signers line (fob-commented only; hand-added entries
+        // are untouched) so a deleted signing key doesn't leave a stale, unverifiable entry.
+        let signers = ssh.appendingPathComponent("allowed_signers")
+        if let text = try? String(contentsOf: signers, encoding: .utf8),
+           let pruned = SSHCheckup.AllowedSigners.removing(text, fobKeyName: name) {
+            try? Data(pruned.utf8).write(to: signers, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: signers.path)
+        }
     }
 
     /// Remove a single fob `Host <alias>` block from ~/.ssh/config (backup first) — used by
@@ -749,6 +757,16 @@ final class AppState: ObservableObject {
             findings.append(f)
         }
 
+        // 5. allowed_signers entries fob wrote for keys that no longer exist.
+        let liveNames = Set(((try? store?.all()) ?? []).map(\.name))
+        let signersURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".ssh/allowed_signers")
+        let signersText = (try? String(contentsOf: signersURL, encoding: .utf8)) ?? ""
+        let orphans = SSHCheckup.AllowedSigners.orphanedFobNames(signersText, liveNames: liveNames)
+        if let f = SSHCheckup.allowedSignersOrphanFinding(orphans: orphans) {
+            findings.append(f)
+        }
+
         return CheckupReport(findings: findings.sorted { $0.severity < $1.severity })
     }
 
@@ -872,12 +890,30 @@ final class AppState: ObservableObject {
     }
 
     /// Restrict a key to git-commit signatures only (["git"]), or clear the restriction.
-    func setGitSigningOnly(_ on: Bool, name: String) {
+    /// Restrict (or clear) a key's SSHSIG signing to the git namespace. `explicit` marks it
+    /// as a deliberate user choice (the toggle), which stops the signing page from ever
+    /// auto-hardening it again; auto-harden passes `explicit: false`.
+    func setGitSigningOnly(_ on: Bool, name: String, explicit: Bool = true) {
         run { store in
             var policy = store.policy(name: name)
             policy.allowedNamespaces = on ? ["git"] : nil
+            if explicit { policy.namespaceChoiceMade = true }
             try store.savePolicy(policy, name: name)
         }
+    }
+
+    /// Secure default for the signing page: harden a dedicated signing key (no SSH-auth role)
+    /// to git-only the first time its signing config is opened, unless the user has already
+    /// made an explicit namespace choice. Returns the resulting git-only state for the toggle.
+    func autoHardenSigningIfEligible(name: String) -> Bool {
+        guard let store else { return false }
+        let policy = store.policy(name: name)
+        let signingOnly = keyUsage(name: name).authHosts.isEmpty
+        if policy.shouldAutoHardenSigning(isSigningOnly: signingOnly) {
+            setGitSigningOnly(true, name: name, explicit: false)
+            return true
+        }
+        return policy.allowedNamespaces == ["git"]
     }
 
 

@@ -19,8 +19,17 @@ public struct KeyPolicy: Codable {
     /// Does not affect SSH authentication, which is governed by `pinnedHostKeys`.
     public var allowedNamespaces: [String]?
 
+    /// Set once the user has *explicitly* chosen this key's namespace restriction (ticked or
+    /// unticked "only sign git commits"). It stops the signing page from re-hardening a key
+    /// whose restriction the user deliberately cleared — `nil` allowedNamespaces alone can't
+    /// tell "never decided" from "chose unrestricted". Optional (nil = never chosen) so old
+    /// `.policy` JSON that predates this field still decodes (synthesized Codable requires a
+    /// key for non-optional properties even when they have a default).
+    public var namespaceChoiceMade: Bool?
+
     public var isDefault: Bool {
-        pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0 && allowedNamespaces == nil
+        pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0
+            && allowedNamespaces == nil && namespaceChoiceMade != true
     }
 
     /// Whether an SSHSIG signature for `namespace` is permitted by this policy.
@@ -29,11 +38,19 @@ public struct KeyPolicy: Codable {
         return allowedNamespaces.contains(namespace)
     }
 
+    /// Whether the signing page should auto-harden this key to git-only: only when it's a
+    /// dedicated signing key (no SSH-auth role), currently unrestricted, and the user hasn't
+    /// made an explicit namespace choice yet. Never overrides a deliberate user decision.
+    public func shouldAutoHardenSigning(isSigningOnly: Bool) -> Bool {
+        isSigningOnly && allowedNamespaces == nil && namespaceChoiceMade != true
+    }
+
     public init(pinnedHostKeys: [Data] = [], reuseSeconds: Double? = nil,
-                allowedNamespaces: [String]? = nil) {
+                allowedNamespaces: [String]? = nil, namespaceChoiceMade: Bool? = nil) {
         self.pinnedHostKeys = pinnedHostKeys
         self.reuseSeconds = reuseSeconds
         self.allowedNamespaces = allowedNamespaces
+        self.namespaceChoiceMade = namespaceChoiceMade
     }
 }
 
