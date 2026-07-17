@@ -87,10 +87,15 @@ struct KeysView: View {
                 if use?.signsCommits ?? false {
                     Button("Signing setup…") { openSigning(key.name) }
                         .help("Review or change this key's commit-signing configuration.")
-                    Button("Rotate…") { openRotate(key.name) }
-                        .help("Replace this signing key with a fresh Secure Enclave key and retire this one.")
                 } else if use?.canOfferSigning ?? true {
                     Button("Sign commits…") { openSigning(key.name) }
+                }
+
+                // Rotate any key that has a role (signing or auth) — replace it with a fresh
+                // Secure Enclave key, keeping the name.
+                if let use, use.signsCommits || !use.authHosts.isEmpty {
+                    Button("Rotate…") { openRotate(key.name) }
+                        .help("Replace this key with a fresh Secure Enclave key and retire this one.")
                 }
 
                 Spacer()
