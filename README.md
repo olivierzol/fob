@@ -197,7 +197,8 @@ It flags:
   /dev/null`, `ForwardAgent yes`, `IdentitiesOnly no` (amplified when set under `Host *`).
 - **Multi-account git footguns** — with per-directory `includeIf` identities but no
   `user.useConfigOnly` guard, a repo outside those directories silently commits as your
-  default account (the classic "wrong email leaked into a commit" bug).
+  default account (the classic "wrong email leaked into a commit" bug). The robust fix is
+  written up in [`docs/MULTI-ACCOUNT-GIT.md`](docs/MULTI-ACCOUNT-GIT.md).
 - **Signatures you can't verify locally** — a fob signing key that isn't yet in
   `~/.ssh/allowed_signers`, so `git verify-commit` can't check your own commits.
 - **Keys loaded in your ssh-agent** — on-disk keys the running agent has loaded sign with
