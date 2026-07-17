@@ -182,6 +182,15 @@ public enum SSHCheckup {
             return trimmed.isEmpty ? "" : trimmed + "\n"
         }
 
+        /// The principals field (first column, e.g. the email) of a fob key's allowed_signers
+        /// line — so rotation can carry it onto the replacement key's line.
+        public static func principal(_ fileText: String, fobKeyName name: String) -> String? {
+            for line in fileText.split(separator: "\n") where fobKeyName(fromLine: String(line)) == name {
+                return line.split(separator: " ").first.map(String.init)
+            }
+            return nil
+        }
+
         /// fob key names present in allowed_signers (via `fob:<name>` comments) that are NOT
         /// in `liveNames` — i.e. entries left behind for keys that no longer exist.
         public static func orphanedFobNames(_ fileText: String, liveNames: Set<String>) -> [String] {
