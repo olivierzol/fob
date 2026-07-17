@@ -459,8 +459,8 @@ do {
         print("Gitea/Forgejo, …) shows \"Verified\". It also verifies locally via allowed_signers.")
 
     case "rotate":
-        // Signing-key rotation (v1): replace a key with a fresh enclave key, keeping its name.
-        // Two steps so you can register the new key before the old is retired.
+        // Rotate a key: replace it with a fresh enclave key, keeping its name so refs don't
+        // change. Two steps so you register/install the new key before the old is retired.
         var rest = Array(arguments.dropFirst())
         let doFinalize = rest.contains("--finalize")
         let requireBiometry = rest.contains("--require-biometry")
@@ -472,13 +472,29 @@ do {
         let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
         let signersURL = sshDir.appendingPathComponent("allowed_signers")
         let temp = "\(name).rotating"
+        // Resolve the key's role so we print the right "add the new key" guidance.
+        let cfg = (try? String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)) ?? ""
+        let hostBlock = HostSetup.listHostBlocks(in: cfg).first {
+            $0.parsed.identityFiles.contains { ($0 as NSString).lastPathComponent == "fob_\(name).pub" }
+        }
         if !doFinalize {
             if (try? store.find(name: temp)) != nil { try store.remove(name: temp) } // clear an abandoned attempt
             let key = try store.create(name: temp, requireBiometry: requireBiometry)
             let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)")
-            print("Rotation prepared for '\(name)'. On your git host, add this NEW key as a")
-            print("Signing Key (a separate entry — keep the old one until you finalize):")
+            print("Rotation prepared for '\(name)'. Add this NEW key alongside the old one:")
             print("     \(pubLine)")
+            print("")
+            let tempPub = sshDir.appendingPathComponent("fob_\(temp).pub").path
+            try Data((pubLine + "\n").utf8).write(to: sshDir.appendingPathComponent("fob_\(temp).pub"), options: .atomic)
+            if let b = hostBlock, HostSetup.isGitHost(hostName: b.parsed.hostName ?? name, user: b.parsed.user) {
+                print("  • Git host: add it as an Authentication Key on the provider's SSH-keys page.")
+            } else if let b = hostBlock {
+                let port = b.parsed.port ?? 22
+                print("  • Server: install it with your CURRENT key —")
+                print("      \(HostSetup.fallbackCopyCommand(alias: name, fobPubPath: tempPub, port: port))")
+            } else {
+                print("  • Signing: add it on your git host as a Signing Key.")
+            }
             print("")
             print("Then swap to it with:  fob rotate \(name) --finalize")
         } else {
@@ -486,8 +502,9 @@ do {
                 fail("No rotation in progress for '\(name)'. Start one with: fob rotate \(name)")
             }
             let signersText = (try? String(contentsOf: signersURL, encoding: .utf8)) ?? ""
-            let email = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
-                ?? gitConfigGlobal("user.email")
+            // A fob:<name> allowed_signers line ⟺ signing key; carry its principal. nil ⟹ auth-
+            // only, so don't touch allowed_signers (avoids adding a spurious line).
+            let signingEmail = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
             try store.savePolicy(store.policy(name: name), name: temp) // carry pin/reuse/namespaces
             try store.rename(from: name, to: "\(name).retired")        // old aside (recoverable)
             try store.rename(from: temp, to: name)                     // new takes the name
@@ -497,15 +514,16 @@ do {
             let pubURL = sshDir.appendingPathComponent("fob_\(name).pub")
             try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
-            var text = signersText
-            if let pruned = SSHCheckup.AllowedSigners.removing(text, fobKeyName: name) { text = pruned }
-            if !email.isEmpty, let updated = SSHCheckup.AllowedSigners.appending(text, email: email, pubLine: pubLine) {
-                text = updated
+            try? FileManager.default.removeItem(at: sshDir.appendingPathComponent("fob_\(temp).pub"))
+            if let email = signingEmail, !email.isEmpty {
+                var text = signersText
+                if let pruned = SSHCheckup.AllowedSigners.removing(text, fobKeyName: name) { text = pruned }
+                if let updated = SSHCheckup.AllowedSigners.appending(text, email: email, pubLine: pubLine) { text = updated }
+                try? Data(text.utf8).write(to: signersURL, options: .atomic)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: signersURL.path)
             }
-            try? Data(text.utf8).write(to: signersURL, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: signersURL.path)
-            print("Rotated '\(name)' to a fresh key (git config unchanged, allowed_signers updated).")
-            print("Last step: remove the OLD signing key from your git host — it's now retired.")
+            print("Rotated '\(name)' to a fresh key (config unchanged; old key destroyed).")
+            print("Last step: remove the OLD key from the server/git host — it's now retired.")
         }
 
     case "policy":

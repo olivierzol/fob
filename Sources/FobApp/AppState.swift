@@ -960,19 +960,19 @@ final class AppState: ObservableObject {
         return e.isEmpty ? nil : e
     }
 
-    // MARK: - Key rotation (v1: signing keys)
+    // MARK: - Key rotation (signing + auth keys)
 
-    /// What step 1 of a signing-key rotation produces: a fresh key (under a temp name) whose
-    /// public key the user registers on their git host before we swap.
+    /// What step 1 of a rotation produces: a fresh key (under a temp name) whose public key the
+    /// user registers on the server/git host (alongside the old one) before we swap.
     struct RotationPrep: Equatable { let pubLine: String; let pubPath: String }
     enum RotationPrepResult: Equatable { case ready(RotationPrep); case failed(String) }
 
     private func rotationTempName(_ name: String) -> String { "\(name).rotating" }
 
-    /// Step 1 — create a fresh Secure Enclave key (temp name) and export its public key, so
-    /// the user can add it on their git host as a Signing Key alongside the old one before the
-    /// swap. Returns the new pub to register, or an error.
-    func prepareSigningRotation(name: String, requireBiometry: Bool) -> RotationPrepResult {
+    /// Step 1 — create a fresh Secure Enclave key (temp name) and export its public key so the
+    /// user can add it on the server/git host alongside the old one before the swap. Role-
+    /// agnostic (signing or auth). Returns the new pub to register/install, or an error.
+    func prepareRotation(name: String, requireBiometry: Bool) -> RotationPrepResult {
         guard let store else { return .failed("Key store unavailable.") }
         let temp = rotationTempName(name)
         if (try? store.find(name: temp)) != nil { try? store.remove(name: temp) } // clear an abandoned attempt
@@ -981,27 +981,77 @@ final class AppState: ObservableObject {
         } catch {
             return .failed(error.localizedDescription)
         }
-        guard let info = signingInfo(for: temp) else {
+        guard let info = signingInfo(for: temp) else {   // exports ~/.ssh/fob_<temp>.pub
             try? store.remove(name: temp)
             return .failed("Couldn't export the new key.")
         }
         return .ready(RotationPrep(pubLine: info.pubLine, pubPath: info.pubPath))
     }
 
-    /// Step 2 — swap the new key into the old key's name so every reference keeps working
-    /// (`user.signingkey = ~/.ssh/fob_<name>.pub` is unchanged, now the new key), carry the
-    /// old policy over, and replace the old key's allowed_signers line with the new one's.
-    /// The old key is destroyed only after the new one is safely in place. nil = success.
-    func finalizeSigningRotation(name: String) -> String? {
+    /// Install the rotation's NEW key on a server (into authorized_keys), authenticating with
+    /// the CURRENT (old) fob key via the alias — so the old key stays live and there's no
+    /// lockout. Mirrors `createAndInstall` but pipes the temp key's pub.
+    func installRotationKeyOnServer(_ c: MigrationCandidate, tempPubLine: String) async -> InstallOutcome {
+        let tempPub = fobPubURL(rotationTempName(c.alias)).path
+        let fallback = HostSetup.fallbackCopyCommand(alias: c.alias, fobPubPath: tempPub, port: c.port)
+        guard let args = HostSetup.installArguments(alias: c.alias) else {
+            return .needsManual(command: fallback, detail: "")
+        }
+        let (status, output) = await runProcess("/usr/bin/ssh", args, stdin: tempPubLine + "\n")
+        if status == 0 && output.contains("fob-installed") { return .installed }
+        if status == 0 && output.contains("fob-present") { return .alreadyPresent }
+        return .needsManual(command: fallback, detail: HostSetup.sanitizeForDisplay(output))
+    }
+
+    /// Prove the rotation's NEW key works on its own (forces `-i fob_<alias>.rotating.pub`),
+    /// so a green check means the new key specifically authenticated — the old one is still
+    /// live and nothing has been removed. Handles both servers and git hosts.
+    func verifyRotationKey(_ c: MigrationCandidate) async -> (ok: Bool, message: String) {
+        guard let store else { return (false, "Key store unavailable.") }
+        let tempPub = fobPubURL(rotationTempName(c.alias)).path
+        var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "IdentitiesOnly=yes",
+                    "-o", "IdentityAgent=\(store.socketPath)",
+                    "-i", tempPub]
+        if c.isGitHost {
+            args += ["-T"]
+            if c.port != 22 { args += ["-p", String(c.port)] }
+            args += ["\(c.user)@\(c.host)"]
+            let (_, output) = await runProcess("/usr/bin/ssh", args)
+            if HostSetup.parseSSHGreeting(output).authenticated {
+                return (true, "New key authenticated with fob — safe to swap.")
+            }
+            let tail = HostSetup.sanitizeForDisplay(output)
+            return (false, "New key not authenticated yet — add it to \(c.provider.displayName) as an Authentication Key first."
+                + (tail.isEmpty ? "" : "\n\(tail)"))
+        }
+        if c.port != 22 { args += ["-p", String(c.port)] }
+        args += ["\(c.user)@\(c.host)", "true"]
+        let (status, output) = await runProcess("/usr/bin/ssh", args)
+        guard status == 0 else {
+            let tail = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (false, "New key didn't connect — nothing changed; the old key still works."
+                + (tail.isEmpty ? "" : "\n\(tail)"))
+        }
+        return (true, "New key works — safe to swap. The old key still works until you retire it.")
+    }
+
+    /// Final step — swap the new key into the old key's name so every reference keeps working
+    /// unchanged (`~/.ssh/config` IdentityFile / gitconfig `user.signingkey` = fob_<name>.pub,
+    /// now the new key). Carries the old policy over; the old key is destroyed only after the
+    /// new one is in place. If the key signs commits, its `allowed_signers` line is swapped too
+    /// (skipped for auth-only keys, which have none). nil = success.
+    func finalizeRotation(name: String) -> String? {
         guard let store else { return "Key store unavailable." }
         let temp = rotationTempName(name)
         guard (try? store.find(name: temp)) != nil else { return "No rotation in progress for “\(name)”." }
         let retired = "\(name).retired"
         let signersURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/allowed_signers")
         let signersText = (try? String(contentsOf: signersURL, encoding: .utf8)) ?? ""
-        // Carry the old allowed_signers principal (email) forward; fall back to global user.email.
-        let email = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
-            ?? runGitSync(["config", "--global", "user.email"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        // A fob:<name> allowed_signers line ⟺ this key signs commits; its principal (email) is
+        // carried onto the new line. nil ⟹ auth-only key, so we don't touch allowed_signers.
+        let signingEmail = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
         do {
             copyPolicy(from: name, to: temp)               // new key inherits pin/reuse/namespaces
             try store.rename(from: name, to: retired)      // move old aside (recoverable)
@@ -1010,22 +1060,27 @@ final class AppState: ObservableObject {
         } catch {
             return error.localizedDescription
         }
+        // signingInfo re-exports ~/.ssh/fob_<name>.pub (now the new key), so ssh-config
+        // IdentityFile / gitconfig user.signingkey — both fob_<name>.pub — need no change.
         guard let info = signingInfo(for: name) else { return "Rotated, but couldn't re-export the key." }
-        // Swap the allowed_signers line: drop the old key's, add the new key's (same comment).
-        var text = signersText
-        if let pruned = SSHCheckup.AllowedSigners.removing(text, fobKeyName: name) { text = pruned }
-        if !email.isEmpty, let updated = SSHCheckup.AllowedSigners.appending(text, email: email, pubLine: info.pubLine) {
-            text = updated
+        // Signing keys: swap the allowed_signers line (drop old blob, add new, same comment).
+        if let email = signingEmail, !email.isEmpty {
+            var text = signersText
+            if let pruned = SSHCheckup.AllowedSigners.removing(text, fobKeyName: name) { text = pruned }
+            if let updated = SSHCheckup.AllowedSigners.appending(text, email: email, pubLine: info.pubLine) { text = updated }
+            try? Data(text.utf8).write(to: signersURL, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: signersURL.path)
         }
-        try? Data(text.utf8).write(to: signersURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: signersURL.path)
+        // Drop the temp export file (its .rotating.pub is no longer referenced).
+        try? FileManager.default.removeItem(at: fobPubURL(rotationTempName(name)))
         refreshKeys()
         return nil
     }
 
-    /// Abandon a prepared-but-not-finalized rotation (deletes the temp key).
+    /// Abandon a prepared-but-not-finalized rotation (deletes the temp key + its export).
     func cancelRotation(name: String) {
         try? store?.remove(name: rotationTempName(name))
+        try? FileManager.default.removeItem(at: fobPubURL(rotationTempName(name)))
     }
 
     /// Copy a key's whole policy (pin/reuse/namespaces + choice marker) to another name.
