@@ -136,7 +136,7 @@ func sshAddListPublicKeys() -> String {
     return String(decoding: data, as: UTF8.self)
 }
 
-func sshCheckupFindings(fobKeyBlobs: Set<String>) -> [SSHCheckup.Finding] {
+func sshCheckupFindings(fobKeyBlobs: Set<String>, fobKeyNames: Set<String>) -> [SSHCheckup.Finding] {
     var findings: [SSHCheckup.Finding] = []
     let home = FileManager.default.homeDirectoryForCurrentUser
     let sshDir = home.appendingPathComponent(".ssh")
@@ -217,6 +217,14 @@ func sshCheckupFindings(fobKeyBlobs: Set<String>) -> [SSHCheckup.Finding] {
         findings.append(f)
     }
 
+    // allowed_signers entries fob wrote for keys that no longer exist.
+    let signersURL = home.appendingPathComponent(".ssh/allowed_signers")
+    let signersText = (try? String(contentsOf: signersURL, encoding: .utf8)) ?? ""
+    let orphans = SSHCheckup.AllowedSigners.orphanedFobNames(signersText, liveNames: fobKeyNames)
+    if let f = SSHCheckup.allowedSignersOrphanFinding(orphans: orphans) {
+        findings.append(f)
+    }
+
     return findings.sorted { $0.severity < $1.severity }
 }
 
@@ -289,7 +297,8 @@ do {
             let parts = line.split(separator: " ")
             return parts.count >= 2 ? String(parts[1]) : nil
         })
-        let findings = sshCheckupFindings(fobKeyBlobs: fobBlobs)
+        let fobNames = Set(((try? store.all()) ?? []).map(\.name))
+        let findings = sshCheckupFindings(fobKeyBlobs: fobBlobs, fobKeyNames: fobNames)
         if findings.isEmpty {
             print("✅ SSH checkup: no issues found — your ~/.ssh looks healthy.")
         } else {

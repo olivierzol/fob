@@ -74,6 +74,46 @@ final class PolicyStoreTests: XCTestCase {
         XCTAssertNil(memory.storage["k"])
     }
 
+    // MARK: - KeyPolicy: namespaceChoiceMade marker (auto-harden)
+
+    func testPolicyDecodesOldJSONWithoutMarker() throws {
+        // A .policy written before the marker existed must still decode (marker defaults false).
+        let old = #"{"pinnedHostKeys":[],"allowedNamespaces":["git"]}"#
+        let policy = try JSONDecoder().decode(KeyPolicy.self, from: Data(old.utf8))
+        XCTAssertEqual(policy.allowedNamespaces, ["git"])
+        XCTAssertNotEqual(policy.namespaceChoiceMade, true)  // absent → treated as "not chosen"
+    }
+
+    func testIsDefaultAccountsForMarker() {
+        // An otherwise-empty policy that records a deliberate choice must NOT be "default"
+        // (else savePolicy would delete it and the choice would be forgotten → re-harden).
+        var p = KeyPolicy()
+        XCTAssertTrue(p.isDefault)
+        p.namespaceChoiceMade = true
+        XCTAssertFalse(p.isDefault)
+    }
+
+    func testShouldAutoHardenSigning() {
+        // Signing-only + unrestricted + no explicit choice → harden.
+        XCTAssertTrue(KeyPolicy().shouldAutoHardenSigning(isSigningOnly: true))
+        // Not signing-only (has an auth role) → never.
+        XCTAssertFalse(KeyPolicy().shouldAutoHardenSigning(isSigningOnly: false))
+        // Already restricted → nothing to do.
+        XCTAssertFalse(KeyPolicy(allowedNamespaces: ["git"]).shouldAutoHardenSigning(isSigningOnly: true))
+        // User made a choice (e.g. deliberately unrestricted) → don't override.
+        XCTAssertFalse(KeyPolicy(namespaceChoiceMade: true).shouldAutoHardenSigning(isSigningOnly: true))
+    }
+
+    func testMarkerSurvivesSaveLoadAndClearedPolicyPersists() throws {
+        let store = KeyStore(directory: URL(fileURLWithPath: "/tmp/unused"),
+                             policyStore: InMemoryPolicyStore())
+        // User unticks git-only on a signing-only key: allowedNamespaces nil BUT choice made.
+        try store.savePolicy(KeyPolicy(namespaceChoiceMade: true), name: "k")
+        // It must persist (not be dropped as "default") so it isn't re-hardened later.
+        XCTAssertEqual(store.policy(name: "k").namespaceChoiceMade, true)
+        XCTAssertFalse(store.policy(name: "k").shouldAutoHardenSigning(isSigningOnly: true))
+    }
+
     // MARK: - Keychain availability probe is safe on any build
 
     func testKeychainAvailabilityProbeDoesNotCrash() {

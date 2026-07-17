@@ -126,6 +126,33 @@ final class CheckupTests: XCTestCase {
         XCTAssertNil(SSHCheckup.AllowedSigners.appending(added!, email: "me@x.com", pubLine: pub)) // idempotent
     }
 
+    func testAllowedSignersRemovingAndOrphans() {
+        let file = """
+        me@x.com namespaces="git" ssh-ed25519 AAAA me@x.com
+        me@x.com namespaces="git" ecdsa-sha2-nistp256 BBBB fob:old
+        me@x.com namespaces="git" ecdsa-sha2-nistp256 CCCC fob:keep
+        """
+        // removing() drops only the matching fob line; the hand-added ed25519 + other fob line stay.
+        let pruned = SSHCheckup.AllowedSigners.removing(file, fobKeyName: "old")
+        XCTAssertNotNil(pruned)
+        XCTAssertFalse(pruned!.contains("fob:old"))
+        XCTAssertTrue(pruned!.contains("ssh-ed25519 AAAA me@x.com")) // hand-added untouched
+        XCTAssertTrue(pruned!.contains("fob:keep"))
+        // no such fob key → nil (nothing changed); never touches the email-commented line
+        XCTAssertNil(SSHCheckup.AllowedSigners.removing(file, fobKeyName: "me@x.com"))
+        XCTAssertNil(SSHCheckup.AllowedSigners.removing(file, fobKeyName: "absent"))
+        // orphans = fob names not in the live set (email lines are never counted).
+        XCTAssertEqual(SSHCheckup.AllowedSigners.orphanedFobNames(file, liveNames: ["keep"]), ["old"])
+        XCTAssertEqual(SSHCheckup.AllowedSigners.orphanedFobNames(file, liveNames: ["old", "keep"]), [])
+    }
+
+    func testAllowedSignersOrphanFinding() {
+        XCTAssertNil(SSHCheckup.allowedSignersOrphanFinding(orphans: []))
+        let f = SSHCheckup.allowedSignersOrphanFinding(orphans: ["old", "gone"])
+        XCTAssertEqual(f?.severity, .low)
+        XCTAssertTrue(f?.detail.contains("“old”") == true && f?.detail.contains("“gone”") == true)
+    }
+
     func testSigningVerificationFinding() {
         XCTAssertNil(SSHCheckup.signingVerificationFinding(usesFobSigning: false, allowedSignersConfigured: false, keyListed: false))
         XCTAssertTrue(SSHCheckup.signingVerificationFinding(usesFobSigning: true, allowedSignersConfigured: false, keyListed: false)?.title.contains("verifiable") == true)

@@ -38,7 +38,9 @@ struct SigningSetupView: View {
 
     private func load() {
         info = state.signingInfo(for: keyName)
-        gitOnly = info?.gitOnly ?? false
+        // Auto-harden a dedicated signing key to git-only on first open (never overriding a
+        // deliberate un-tick — see KeyPolicy.namespaceChoiceMade).
+        gitOnly = state.autoHardenSigningIfEligible(name: keyName)
         identities = state.discoverGitIdentities()
         // Multi-account: default to the first identity (writing --global would clobber
         // their setup). Single-account: default to per-repo (safe, universal).

@@ -161,6 +161,51 @@ public enum SSHCheckup {
             let sep = fileText.isEmpty || fileText.hasSuffix("\n") ? "" : "\n"
             return fileText + sep + entry(email: email, pubLine: pubLine) + "\n"
         }
+
+        /// The fob key name from a full allowed_signers LINE's trailing `fob:<name>` comment,
+        /// if any (the line ends with the pubLine, whose comment we already know how to read).
+        static func fobKeyName(fromLine line: String) -> String? {
+            guard let comment = line.split(separator: " ").last, comment.hasPrefix("fob:") else { return nil }
+            return String(comment.dropFirst(4))
+        }
+
+        /// Drop the allowed_signers line(s) for a given fob key (matched by the trailing
+        /// `fob:<name>` comment). Only ever touches fob's own entries — hand-added lines
+        /// (email-commented ed25519 keys, etc.) are left untouched. nil = nothing changed.
+        public static func removing(_ fileText: String, fobKeyName name: String) -> String? {
+            let lines = fileText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let kept = lines.filter { fobKeyName(fromLine: $0) != name }
+            guard kept.count != lines.count else { return nil }
+            let joined = kept.joined(separator: "\n")
+            // Preserve a trailing newline only if there's content (avoid a lone "\n").
+            let trimmed = joined.hasSuffix("\n") ? String(joined.dropLast()) : joined
+            return trimmed.isEmpty ? "" : trimmed + "\n"
+        }
+
+        /// fob key names present in allowed_signers (via `fob:<name>` comments) that are NOT
+        /// in `liveNames` — i.e. entries left behind for keys that no longer exist.
+        public static func orphanedFobNames(_ fileText: String, liveNames: Set<String>) -> [String] {
+            var seen = Set<String>(), out: [String] = []
+            for line in fileText.split(separator: "\n") {
+                guard let name = fobKeyName(fromLine: String(line)), !liveNames.contains(name),
+                      !seen.contains(name) else { continue }
+                seen.insert(name); out.append(name)
+            }
+            return out
+        }
+    }
+
+    /// Flag `~/.ssh/allowed_signers` entries fob wrote for keys that no longer exist (e.g. a
+    /// signing key deleted before this cleanup shipped). Only fob-commented lines are counted;
+    /// nil = none.
+    public static func allowedSignersOrphanFinding(orphans: [String]) -> Finding? {
+        guard !orphans.isEmpty else { return nil }
+        let names = orphans.map { "“\($0)”" }.joined(separator: ", ")
+        let s = orphans.count == 1 ? "entry" : "entries"
+        return Finding(severity: .low, category: "Config",
+            title: "Stale allowed_signers \(s) for \(orphans.count == 1 ? "a deleted key" : "deleted keys")",
+            detail: "~/.ssh/allowed_signers still lists \(orphans.count) fob \(s) (\(names)) whose key fob no longer holds. Harmless, but tidy: delete those \(s) — fob prunes them automatically when you delete a key from now on.",
+            fix: .revealFile((NSString(string: "~/.ssh/allowed_signers")).expandingTildeInPath))
     }
 
     /// Flag when fob-signed commits can't be verified LOCALLY (GitHub's Verified is
