@@ -64,6 +64,7 @@ struct ConfigWindow: View {
             switch detail {
             case .signing: SigningSetupView()
             case .migrateHost: MigrateHostView()
+            case .rotate: RotateKeyView()
             }
         } else {
             switch state.configTab {

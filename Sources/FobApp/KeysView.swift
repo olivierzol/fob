@@ -87,6 +87,8 @@ struct KeysView: View {
                 if use?.signsCommits ?? false {
                     Button("Signing setup…") { openSigning(key.name) }
                         .help("Review or change this key's commit-signing configuration.")
+                    Button("Rotate…") { openRotate(key.name) }
+                        .help("Replace this signing key with a fresh Secure Enclave key and retire this one.")
                 } else if use?.canOfferSigning ?? true {
                     Button("Sign commits…") { openSigning(key.name) }
                 }
@@ -122,6 +124,11 @@ struct KeysView: View {
         state.signingSetupKey = name
         state.signingSetupHost = nil
         state.configDetail = .signing
+    }
+
+    private func openRotate(_ name: String) {
+        state.rotateKey = name
+        state.configDetail = .rotate
     }
 
     private func prune(_ alias: String) {

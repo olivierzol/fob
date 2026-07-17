@@ -203,6 +203,33 @@ public struct KeyStore {
         }
         try? policyStore.remove(name: name) // also clear a keychain-backed policy
     }
+
+    /// Rename a key in place: move its enclave blob, migrate its policy, and refresh the
+    /// in-store public-key line's `fob:<name>` comment. Used by rotation to swap a freshly
+    /// created key into the retired key's name so every reference (gitconfig `user.signingkey
+    /// = ~/.ssh/fob_<name>.pub`, ssh-config `IdentityFile`) keeps working unchanged. The
+    /// enclave key is unaffected — only its stored name changes. Throws if `from` is missing
+    /// or `to` already exists. The exported ~/.ssh/fob_<name>.pub is the caller's to refresh.
+    public func rename(from: String, to: String) throws {
+        guard Self.isValidName(to) else { throw KeyStoreError.invalidName(to) }
+        _ = try find(name: from) // 404s cleanly if the source is missing
+        let fm = FileManager.default
+        let toKey = keysDirectory.appendingPathComponent("\(to).key")
+        guard !fm.fileExists(atPath: toKey.path) else { throw KeyStoreError.keyExists(to) }
+        // Move the Secure Enclave blob.
+        try fm.moveItem(at: keysDirectory.appendingPathComponent("\(from).key"), to: toKey)
+        // Migrate the policy through the store (handles both file- and keychain-backed).
+        if let policy = try? policyStore.load(name: from) {
+            try policyStore.save(policy, name: to)
+            try policyStore.remove(name: from)
+        }
+        // Rewrite the in-store public-key line with the new name's comment; drop the old.
+        let moved = try find(name: to)
+        let pubLine = SSHFormat.authorizedKeysLine(try moved.publicKey(), comment: "fob:\(to)")
+        try Data((pubLine + "\n").utf8).write(
+            to: keysDirectory.appendingPathComponent("\(to).pub"), options: .atomic)
+        try? fm.removeItem(at: keysDirectory.appendingPathComponent("\(from).pub"))
+    }
 }
 
 public enum KeyStoreError: LocalizedError {

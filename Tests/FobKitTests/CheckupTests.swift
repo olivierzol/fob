@@ -144,6 +144,9 @@ final class CheckupTests: XCTestCase {
         // orphans = fob names not in the live set (email lines are never counted).
         XCTAssertEqual(SSHCheckup.AllowedSigners.orphanedFobNames(file, liveNames: ["keep"]), ["old"])
         XCTAssertEqual(SSHCheckup.AllowedSigners.orphanedFobNames(file, liveNames: ["old", "keep"]), [])
+        // principal() returns the first column of the matching fob line (for rotation to carry).
+        XCTAssertEqual(SSHCheckup.AllowedSigners.principal(file, fobKeyName: "keep"), "me@x.com")
+        XCTAssertNil(SSHCheckup.AllowedSigners.principal(file, fobKeyName: "absent"))
     }
 
     func testAllowedSignersOrphanFinding() {

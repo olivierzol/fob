@@ -214,6 +214,25 @@ final class SecurityTests: XCTestCase {
         }
     }
 
+    func testRenamePreservesKeyAndPolicy() throws {
+        try XCTSkipUnless(SecureEnclave.isAvailable, "Secure Enclave required")
+        let store = try makeTempStore()
+        let orig = try store.create(name: "rot", requireBiometry: false)
+        try store.savePolicy(KeyPolicy(reuseSeconds: 30, namespaceChoiceMade: true), name: "rot")
+        let origPub = try orig.publicKey().rawRepresentation
+
+        try store.rename(from: "rot", to: "rot2")
+        XCTAssertThrowsError(try store.find(name: "rot"))                    // old name gone
+        let moved = try store.find(name: "rot2")
+        XCTAssertEqual(try moved.publicKey().rawRepresentation, origPub)     // same enclave key
+        XCTAssertEqual(store.policy(name: "rot2").reuseSeconds, 30)          // policy carried over
+        XCTAssertEqual(store.policy(name: "rot2").namespaceChoiceMade, true)
+
+        XCTAssertThrowsError(try store.rename(from: "absent", to: "x"))      // source missing
+        _ = try store.create(name: "other", requireBiometry: false)
+        XCTAssertThrowsError(try store.rename(from: "rot2", to: "other"))    // target exists
+    }
+
     private func makeTempStore() throws -> KeyStore {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("fobtest-\(UUID().uuidString)")
