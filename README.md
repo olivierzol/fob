@@ -233,6 +233,8 @@ fob is a **presence-gated key store, not a sandbox around your own logged-in ses
 
 A full third-party-style audit of this codebase (findings resolved) plus a regression test suite (`swift test`) is in [`SECURITY_CLAUDE_REPORT.md`](SECURITY_CLAUDE_REPORT.md).
 
+**Out of scope (by design).** fob protects SSH auth and git commit-signing keys; it deliberately does **not** manage macOS code-signing (Developer ID) keys — the Secure Enclave is P-256-only and Apple requires RSA-2048, so an enclave-backed signing identity isn't possible. Scope decisions and their reasoning are logged in [`docs/DESIGN-DECISIONS.md`](docs/DESIGN-DECISIONS.md).
+
 ## CLI reference
 
 | Command | Description |
