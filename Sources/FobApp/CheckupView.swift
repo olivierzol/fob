@@ -101,6 +101,12 @@ struct CheckupView: View {
                 state.migrateAlias = alias
                 state.configDetail = .migrateHost
             }.font(.caption).padding(.top, 2)
+        case .setupHost(let host, let isGit):
+            Button("Set up \(host)…") {
+                state.newKeyPrefill = .init(host: host, isGit: isGit)
+                state.configDetail = nil
+                state.configTab = .newKey
+            }.font(.caption).padding(.top, 2)
         case .signing:
             Text("Fix: a key's ••• → “Use for commit signing…”.")
                 .font(.caption).foregroundStyle(.tertiary)

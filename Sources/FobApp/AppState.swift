@@ -59,6 +59,11 @@ final class AppState: ObservableObject {
     /// The key the Rotate page operates on (set before routing to `.rotate`).
     @Published var rotateKey: String?
 
+    /// A host to pre-fill on the New key page (set from a checkup finding, then routed to
+    /// `.newKey`). Consumed and cleared by `HostSetupView` on appear.
+    struct NewKeyPrefill: Equatable { let host: String; let isGit: Bool }
+    @Published var newKeyPrefill: NewKeyPrefill?
+
     /// Set the config window's route, then the caller opens the window. Detail routes reuse
     /// the existing `signingSetupKey`/`migrateAlias` fields as their parameters (set those
     /// first). Passing a tab clears any active detail.
@@ -770,6 +775,18 @@ final class AppState: ObservableObject {
                 title: "Commit signing uses a non-fob key",
                 detail: "Your git signing key isn't a fob key. Move it so commit signatures are Touch ID-gated.",
                 fix: .signing))
+        }
+
+        // 3c. Hosts you've connected to (in known_hosts) that aren't set up with fob at all —
+        // e.g. reached once with a password, so there's no ~/.ssh/config entry to migrate.
+        let khText = (try? String(contentsOf: sshDir.appendingPathComponent("known_hosts"), encoding: .utf8)) ?? ""
+        for entry in SSHCheckup.unconfiguredKnownHosts(knownHosts: khText, sshConfig: config) {
+            let isGit = HostSetup.isGitHost(hostName: entry.host, user: nil)
+            let kind = isGit ? "git host" : "server"
+            findings.append(.init(severity: .opportunity, category: "Opportunity",
+                title: "“\(entry.host)” isn't set up with fob",
+                detail: "You've connected to this \(kind) (it's in ~/.ssh/known_hosts) but it has no fob key. Add a Touch ID-gated Secure Enclave key for it.",
+                fix: .setupHost(host: entry.host, isGit: isGit)))
         }
 
         // 3b. fob signing set up, but can it be verified locally?
