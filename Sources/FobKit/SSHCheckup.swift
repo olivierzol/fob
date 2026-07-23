@@ -21,10 +21,11 @@ public enum SSHCheckup {
 
     /// What the UI/CLI can offer for a finding (all opt-in; the checkup never acts itself).
     public enum FixHint: Equatable {
-        case migrate(alias: String) // open the Migrate flow for this host
-        case signing               // open the commit-signing flow
-        case command(String)       // copy-paste guidance (a config line / chmod)
-        case revealFile(String)    // reveal a key file in Finder
+        case migrate(alias: String)              // open the Migrate flow for this host
+        case setupHost(host: String, isGit: Bool) // open New key, prefilled for this host
+        case signing                            // open the commit-signing flow
+        case command(String)                    // copy-paste guidance (a config line / chmod)
+        case revealFile(String)                 // reveal a key file in Finder
         case none
     }
 
@@ -124,6 +125,66 @@ public enum SSHCheckup {
         return Finding(severity: .high, category: "Key", title: "“\(name)” is unencrypted and unused",
             detail: "This private key is stored unencrypted and no ~/.ssh/config host or your git signing config references it — you've likely migrated off it to fob. Delete it, and remove it from any account/server that still trusts it.",
             fix: .command("rm \(path) \(path).pub"))
+    }
+
+    // MARK: - known_hosts (hosts you've connected to but never set up with fob)
+
+    /// One connectable host recovered from `~/.ssh/known_hosts`.
+    public struct KnownHostEntry: Equatable {
+        public let host: String   // hostname or IP (bracket/port form already stripped)
+        public let port: Int?     // non-nil only for a `[host]:port` entry
+        public init(host: String, port: Int?) { self.host = host; self.port = port }
+    }
+
+    /// Parse `~/.ssh/known_hosts` into the distinct hosts you've actually connected to.
+    /// Skips comments, `@cert-authority`/`@revoked` marker lines, and wildcard patterns.
+    /// Hashed entries (`|1|…`, from `HashKnownHosts yes`) can't be reversed to a name, so
+    /// they're not returned — only *counted*, so the caller can note them.
+    public static func parseKnownHosts(_ text: String) -> (hosts: [KnownHostEntry], hashedCount: Int) {
+        var out: [KnownHostEntry] = []
+        var seen = Set<String>()
+        var hashed = 0
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") || line.hasPrefix("@") { continue }
+            // The first whitespace-delimited field is a comma-separated host-pattern list.
+            guard let field = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).first else { continue }
+            if field.hasPrefix("|") { hashed += 1; continue } // |1|salt|hash — unreadable
+            for tokenSub in field.split(separator: ",") {
+                let token = String(tokenSub)
+                if token.contains("*") || token.contains("?") || token.hasPrefix("!") { continue }
+                let (host, port) = splitHostPort(token)
+                let low = host.lowercased()
+                if host.isEmpty || low == "localhost" || host == "127.0.0.1" || host == "::1" { continue }
+                let key = "\(low)|\(port.map(String.init) ?? "")"
+                if seen.insert(key).inserted { out.append(KnownHostEntry(host: host, port: port)) }
+            }
+        }
+        return (out, hashed)
+    }
+
+    /// Hosts present in `known_hosts` but absent from `~/.ssh/config` — neither as a literal
+    /// `Host` alias nor a `HostName` value — i.e. hosts you've connected to (often via a
+    /// password) but never set up with a key. These are the "offer a fob key" candidates.
+    public static func unconfiguredKnownHosts(knownHosts: String, sshConfig: String) -> [KnownHostEntry] {
+        var configured = Set<String>()
+        for b in HostSetup.listHostBlocks(in: sshConfig) {
+            configured.insert(b.alias.lowercased())
+            if let h = b.parsed.hostName?.lowercased() { configured.insert(h) }
+        }
+        return parseKnownHosts(knownHosts).hosts.filter { !configured.contains($0.host.lowercased()) }
+    }
+
+    /// `[host]:port` → (host, port); bracketless `host` → (host, nil). Bare IPv6 (no brackets)
+    /// is left whole (its colons aren't a port), matching OpenSSH's own known_hosts format.
+    static func splitHostPort(_ token: String) -> (String, Int?) {
+        if token.hasPrefix("["), let close = token.firstIndex(of: "]") {
+            let host = String(token[token.index(after: token.startIndex)..<close])
+            let rest = token[token.index(after: close)...]
+            if rest.hasPrefix(":"), let p = Int(rest.dropFirst()) { return (host, p) }
+            return (host, nil)
+        }
+        return (token, nil)
     }
 
     // MARK: - allowed_signers (local commit-signature verification)

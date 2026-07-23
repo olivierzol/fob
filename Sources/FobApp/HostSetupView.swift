@@ -44,6 +44,7 @@ struct HostSetupView: View {
         }
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear(perform: applyPrefill)
     }
 
     // MARK: Form
@@ -190,6 +191,24 @@ struct HostSetupView: View {
                 Spacer()
                 Button("Done") { resetForm() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
+        }
+    }
+
+    /// Consume a one-shot prefill routed from a checkup finding: pick the mode and fill the
+    /// host so the user lands on the right form with the box already typed in.
+    private func applyPrefill() {
+        guard let p = state.newKeyPrefill else { return }
+        state.newKeyPrefill = nil
+        let label = p.host.split(separator: ".").first.map(String.init) ?? p.host
+        if p.isGit {
+            mode = .git
+            provider = HostSetup.gitProvider(forHost: p.host)
+            if provider == .other, customHost.isEmpty { customHost = p.host }
+            if gitAlias.isEmpty { gitAlias = label }
+        } else {
+            mode = .server
+            if host.isEmpty { host = p.host }
+            if alias.isEmpty { alias = label }
         }
     }
 

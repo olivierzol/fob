@@ -185,6 +185,17 @@ func sshCheckupFindings(fobKeyBlobs: Set<String>, fobKeyNames: Set<String>) -> [
             title: "“\(block.alias)” still uses an on-disk key",
             detail: "Migrate it to a fob key:  fob adopt \(block.alias)", fix: .none))
     }
+
+    // Hosts in known_hosts you've connected to but never set up with fob (no config entry).
+    let khText = (try? String(contentsOf: sshDir.appendingPathComponent("known_hosts"), encoding: .utf8)) ?? ""
+    for entry in SSHCheckup.unconfiguredKnownHosts(knownHosts: khText, sshConfig: config) {
+        let kind = HostSetup.isGitHost(hostName: entry.host, user: nil) ? "git host" : "server"
+        findings.append(.init(severity: .opportunity, category: "Opportunity",
+            title: "“\(entry.host)” isn't set up with fob",
+            detail: "You've connected to this \(kind) but it has no fob key. Add one:  fob setup \(entry.host)",
+            fix: .none))
+    }
+
     let gitconfig = (try? String(contentsOf: home.appendingPathComponent(".gitconfig"), encoding: .utf8)) ?? ""
     let signing = GitConfig.parse(gitconfig)
     if (signing.signingKey != nil || signing.format != nil), !signing.usesFob {
