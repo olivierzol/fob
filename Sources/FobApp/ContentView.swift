@@ -413,6 +413,7 @@ struct ContentView: View {
         case .refusedPin:    return (e.key ?? "key", "\(act) · blocked (wrong host)")
         case .refusedPolicy: return (e.key ?? "key", "\(act) · blocked (policy)")
         case .refusedNamespace: return (e.key ?? "key", "\(act) · blocked (namespace)")
+        case .refusedMalformed: return (e.key ?? "key", "\(act) · blocked (malformed)")
         case .unknownKey:    return (peerCmd(e.peer) ?? "unknown", (dest.map { " · \($0)" } ?? "") + " · unknown key")
         case .bind:          return (dest ?? "host", " · bound")
         case .bindRejected:  return (peerCmd(e.peer) ?? "client", " · bind rejected")
@@ -446,7 +447,7 @@ struct ContentView: View {
         switch kind {
         case .signed, .signedReused: return Theme.green
         case .denied: return .orange
-        case .refusedPin, .refusedPolicy, .refusedNamespace, .bindRejected: return Theme.red
+        case .refusedPin, .refusedPolicy, .refusedNamespace, .refusedMalformed, .bindRejected: return Theme.red
         case .unknownKey: return .yellow
         case .bind: return Theme.accent
         case .listening: return t.sub
