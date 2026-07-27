@@ -24,6 +24,16 @@ found.** The findings below are medium/low hardening items plus an explicit stat
 of the threat model and its inherent limits, which an open-source project should
 document plainly so users don't over-trust it.
 
+## Contents
+
+- [Threat model](#threat-model-what-fob-does-and-does-not-defend-against) — what fob does and doesn't defend against
+- [Findings summary](#findings-summary) — the table of every finding + status
+- Findings detail — [Medium](#medium) · [Low](#low) · [Informational / by-design](#informational--by-design)
+- [Things done well](#things-done-well-worth-keeping--highlighting-to-reviewers)
+- [Re-audit 2026-07-13](#re-audit-2026-07-13--migration-git-host--signing) — migration, git-host & signing (M-4, L-7, I-3)
+- [Re-audit 2026-07-27](#re-audit-2026-07-27--independent-audit-chatgpt) — independent audit, ChatGPT (CG-01…CG-04)
+- [Prioritized recommendations](#prioritized-recommendations)
+
 ---
 
 ## Threat model (what fob does and does not defend against)
