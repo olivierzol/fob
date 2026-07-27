@@ -57,6 +57,10 @@ struct MigrateHostView: View {
     private func load() {
         candidate = state.migrationCandidate(alias: alias)
         alreadyMigrated = candidate?.usesFob ?? false
+        // Capture trust-on-first-use state HERE, before fob makes any connection. The server
+        // flow's install step connects with accept-new and populates known_hosts, so reading
+        // this later (in runVerify) would mis-report a first-seen host as already known.
+        firstUse = candidate.map { !state.hostIsKnown($0) } ?? false
         install = nil; applied = nil; verified = nil
         pinned = state.keys.first { $0.name == alias }?.isPinned ?? false
         pinNote = nil; retired = nil; busy = false
@@ -152,11 +156,7 @@ struct MigrateHostView: View {
         // Step 4 — pin + retire + sign hop
         if verified?.ok == true {
             step(4, "Lock it down") {
-                if firstUse, !pinned, let fp = state.hostKeyFingerprint(c) {
-                    Label("First connection to \(c.host) — its host key was trusted on first use, not verified. If this host is security-sensitive, confirm this fingerprint against a trusted source before pinning:\n\(fp)",
-                          systemImage: "exclamationmark.shield")
-                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                }
+                tofuNote(c)
                 HStack(spacing: 10) {
                     Button(pinned ? "Pinned ✓" : "Pin \(alias) → \(c.host)") { runPin(c) }.disabled(pinned)
                     if let pinNote {
@@ -236,7 +236,6 @@ struct MigrateHostView: View {
     }
 
     private func runVerifyGit(_ c: AppState.MigrationCandidate) {
-        firstUse = !state.hostIsKnown(c)   // capture before the connection trusts it (accept-new)
         busy = true
         Task {
             let result = await state.verifyGitHost(c)
@@ -338,9 +337,22 @@ struct MigrateHostView: View {
         }
     }
 
+    /// A trust-on-first-use caution shown before pinning when the host had no `known_hosts`
+    /// entry before fob first connected (captured in `load()`, so the server flow's accept-new
+    /// install can't mask it). Prevents pinning a first-connection/MITM key as if verified.
+    @ViewBuilder
+    private func tofuNote(_ c: AppState.MigrationCandidate) -> some View {
+        if firstUse, !pinned, let fp = state.hostKeyFingerprint(c) {
+            Label("First connection to \(c.host) — its host key was trusted on first use, not verified. If this host is security-sensitive, confirm this fingerprint against a trusted source before pinning:\n\(fp)",
+                  systemImage: "exclamationmark.shield")
+                .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     @ViewBuilder
     private func lockdownStep(_ c: AppState.MigrationCandidate, _ n: Int) -> some View {
         step(n, "Lock it down") {
+            tofuNote(c)
             HStack(spacing: 10) {
                 Button(pinned ? "Pinned ✓" : "Pin \(alias) → \(c.host)") { runPin(c) }.disabled(pinned)
                 if let pinNote {
@@ -404,7 +416,6 @@ struct MigrateHostView: View {
     }
 
     private func runVerify(_ c: AppState.MigrationCandidate) {
-        firstUse = !state.hostIsKnown(c)   // capture before the connection trusts it (accept-new)
         busy = true
         Task {
             if let msg = await state.verifyMigration(c) {
