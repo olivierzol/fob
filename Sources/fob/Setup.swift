@@ -66,7 +66,7 @@ enum Setup {
         }
         let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
         try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
         print("Public key exported to \(pubURL.path).")
 
         let newConfig = HostSetup.migratedConfig(configText, alias: alias,
@@ -257,7 +257,7 @@ enum Setup {
         let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
         let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
         try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
         print("Public key exported to \(pubURL.path).")
 
         let destination = "\(user)@\(host)"

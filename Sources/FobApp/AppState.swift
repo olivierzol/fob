@@ -317,7 +317,7 @@ final class AppState: ObservableObject {
             let pubURL = sshDir.appendingPathComponent("fob_\(alias).pub")
             let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(alias)")
             try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
 
             let configURL = sshDir.appendingPathComponent("config")
             let existing = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
@@ -515,7 +515,7 @@ final class AppState: ObservableObject {
                                                     withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
             refreshKeys()
         } catch {
             return .failed(error.localizedDescription)
@@ -603,7 +603,7 @@ final class AppState: ObservableObject {
                                                     withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
 
             let existing = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
             if !HostSetup.hostBlockExists(alias: alias, in: existing) {
@@ -636,7 +636,7 @@ final class AppState: ObservableObject {
                                                     withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
             refreshKeys()
             return .ok(pubLine: pubLine)
         } catch {
@@ -946,7 +946,7 @@ final class AppState: ObservableObject {
             return nil
         }
         try? Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
         let signer = (try? store.ensureSignWrapper()) ?? store.signWrapperPath
         return SigningInfo(
             name: name, pubLine: pubLine, pubPath: pubURL.path,
