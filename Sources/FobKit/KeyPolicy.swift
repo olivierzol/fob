@@ -76,11 +76,26 @@ extension KeyStore {
         }
     }
 
-    /// Convenience for display contexts (CLI/UI): an unreadable policy shows as the
-    /// default. Signing decisions MUST use `policyStatus` so corruption fails closed.
-    public func policy(name: String) -> KeyPolicy {
+    /// Convenience for **display** contexts only (CLI/UI): an unreadable policy shows as
+    /// the default. Signing decisions MUST use `policyStatus`, and any read-modify-write
+    /// MUST use `loadPolicyForMutation`, so corruption fails closed instead of silently
+    /// rewriting the record without its pins.
+    public func displayPolicy(name: String) -> KeyPolicy {
         if case .present(let policy) = policyStatus(name: name) { return policy }
         return KeyPolicy()
+    }
+
+    /// Load a policy for a read-modify-write. `.absent` is the open default (there is
+    /// genuinely no record yet); `.unreadable` **throws** so a mutation can't overwrite a
+    /// corrupt/transiently-unreadable record with a partial policy built on the open
+    /// default (which would drop pins / a namespace restriction). Callers must surface the
+    /// error and leave the record untouched.
+    public func loadPolicyForMutation(name: String) throws -> KeyPolicy {
+        switch policyStatus(name: name) {
+        case .present(let policy): return policy
+        case .absent: return KeyPolicy()
+        case .unreadable: throw KeyStoreError.policyUnreadable(name)
+        }
     }
 
     public func savePolicy(_ policy: KeyPolicy, name: String) throws {
@@ -104,6 +119,19 @@ extension HostResolver {
             .appendingPathComponent(".ssh/known_hosts")
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         return hostKeys(inKnownHosts: contents, host: host, port: port)
+    }
+
+    /// The OpenSSH-style `SHA256:…` fingerprint of a host key blob (base64, no padding) —
+    /// the same form `ssh` prints on a first connection, so a user can compare it against a
+    /// trusted source before pinning a trust-on-first-use host (CG-04).
+    public static func fingerprint(ofHostKey blob: Data) -> String {
+        "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+    }
+
+    /// The fingerprint of the host's first recorded known_hosts key, or nil if none.
+    public static func fingerprint(forHost host: String, port: Int? = nil) -> String? {
+        knownHostKeys(for: host, port: port).first.map(fingerprint(ofHostKey:))
     }
 
     /// Pure matcher over known_hosts contents (testable without touching the filesystem).

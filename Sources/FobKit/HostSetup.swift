@@ -25,10 +25,15 @@ public enum HostSetup {
         return false
     }
 
-    /// A hostname/username safe to interpolate into ssh arguments and config: non-empty,
-    /// no spaces, and no leading '-' (so it can never be parsed as an ssh option).
+    /// A hostname/username safe to interpolate into ssh arguments and config: non-empty, no
+    /// leading '-' (so it can never be parsed as an ssh option such as `-oProxyCommand=…`),
+    /// and no ASCII control or whitespace character (space, tab, newline, …) — not just the
+    /// literal space. Applied to values parsed from an existing ~/.ssh/config too, right
+    /// before they become ssh arguments.
     public static func isValidHostToken(_ s: String) -> Bool {
-        !s.isEmpty && !s.contains(" ") && !s.hasPrefix("-")
+        guard !s.isEmpty, !s.hasPrefix("-") else { return false }
+        let unsafe = CharacterSet.whitespacesAndNewlines.union(.controlCharacters)
+        return s.unicodeScalars.allSatisfy { !unsafe.contains($0) }
     }
 
     /// POSIX single-quote a string so a shell treats it as one literal argument, safe to

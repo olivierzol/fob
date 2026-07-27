@@ -18,7 +18,7 @@ private enum AgentMessage: UInt8 {
 /// flows through here so the menu-bar app can show a live feed.
 public struct AgentEvent {
     public enum Kind: String {
-        case listening, signed, signedReused, denied, refusedPin, refusedPolicy, refusedNamespace, unknownKey, bind, bindRejected
+        case listening, signed, signedReused, denied, refusedPin, refusedPolicy, refusedNamespace, refusedMalformed, unknownKey, bind, bindRejected
     }
     public let kind: Kind
     public let message: String
@@ -275,9 +275,20 @@ public final class Agent: @unchecked Sendable {
 
         // A commit/file signature (`ssh-keygen -Y sign`, e.g. git commit signing) rather
         // than an SSH login: the payload is an SSHSIG envelope. It has no host binding,
-        // so it's gated by the key's allowed namespaces, not by host pinning.
-        if let namespace = SSHSIG.namespace(of: dataToSign) {
-            return signSSHSIG(key: key, data: dataToSign, namespace: namespace, policy: policy, peer: peer)
+        // so it's gated by the key's allowed namespaces, not by host pinning. Parse it
+        // strictly: an envelope that carries the "SSHSIG" magic but doesn't conform is
+        // refused (never signed under a misleading label, never fell through to auth).
+        switch SSHSIG.classify(dataToSign) {
+        case .valid(let parsed):
+            return signSSHSIG(key: key, data: dataToSign, namespace: parsed.namespace, policy: policy, peer: peer)
+        case .malformed:
+            log("REFUSED key '\(key.name)' (\(peer)) — malformed SSHSIG signing request")
+            audit.record("refused-malformed", key: key.name, destination: "sshsig", peer: peer)
+            announce(.refusedMalformed, "⛔️ Blocked: \(peer) sent a malformed signature request with key '\(key.name)'",
+                     key: key.name, destination: "sshsig", peer: peer)
+            return Data([AgentMessage.failure.rawValue])
+        case .notSSHSIG:
+            break // an ordinary SSH authentication payload — continue below
         }
 
         // Pinning: a pinned key signs only for its verified, bound host — refused
@@ -344,12 +355,16 @@ public final class Agent: @unchecked Sendable {
     /// auth, nor across namespaces).
     private func signSSHSIG(key: StoredKey, data: Data, namespace: String,
                             policy: KeyPolicy, peer: String) -> Data {
-        let purpose = namespace == "git" ? "a git commit" : "a \(namespace) signature"
+        // The raw namespace drives the policy check; a sanitized copy (control chars
+        // stripped, length-capped) is what goes into prompts, notifications, and audit —
+        // so a crafted namespace can't inject newlines/escapes into that text.
+        let safeNS = Self.sanitizeNamespace(namespace)
+        let purpose = namespace == "git" ? "a git commit" : "a \(safeNS) signature"
         guard policy.allowsSignature(namespace: namespace) else {
-            log("REFUSED signing \(purpose) with key '\(key.name)' (\(peer)) — namespace '\(namespace)' not allowed")
-            audit.record("refused-namespace", key: key.name, destination: namespace, peer: peer)
-            announce(.refusedNamespace, "⛔️ Blocked: \(peer) tried to sign \(purpose) with key '\(key.name)' — namespace ‘\(namespace)’ isn't allowed",
-                     key: key.name, destination: namespace, peer: peer)
+            log("REFUSED signing \(purpose) with key '\(key.name)' (\(peer)) — namespace '\(safeNS)' not allowed")
+            audit.record("refused-namespace", key: key.name, destination: safeNS, peer: peer)
+            announce(.refusedNamespace, "⛔️ Blocked: \(peer) tried to sign \(purpose) with key '\(key.name)' — namespace ‘\(safeNS)’ isn't allowed",
+                     key: key.name, destination: safeNS, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
 
@@ -359,7 +374,7 @@ public final class Agent: @unchecked Sendable {
         if reuseWindow > 0, let cached = cachedAuthorization(for: key.name, destination: reuseScope) {
             if let signature = try? key.privateKey(context: cached).signature(for: data) {
                 log("signed \(purpose) with key '\(key.name)' (\(peer)) — reuse window")
-                audit.record("signed-\(namespace)", key: key.name, destination: purpose, peer: peer)
+                audit.record("signed-\(safeNS)", key: key.name, destination: purpose, peer: peer)
                 announce(.signedReused, "🔑 \(peer) signed \(purpose) with key '\(key.name)' (reuse window)",
                          key: key.name, destination: purpose, peer: peer)
                 return signResponse(signature)
@@ -387,6 +402,14 @@ public final class Agent: @unchecked Sendable {
                      key: key.name, destination: purpose, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
+    }
+
+    /// Strip control characters (and cap length) from an SSHSIG namespace before it's shown
+    /// in a Touch ID prompt / notification / audit event — a validated namespace is still
+    /// attacker-chosen text, so it must never carry newlines or escapes into that display.
+    static func sanitizeNamespace(_ s: String) -> String {
+        let cleaned = String(s.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        return String(cleaned.prefix(64))
     }
 
     private func signResponse(_ signature: P256.Signing.ECDSASignature) -> Data {

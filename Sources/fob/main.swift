@@ -352,7 +352,7 @@ do {
         guard !hostKeys.isEmpty else {
             fail("no host keys for '\(host)' in ~/.ssh/known_hosts — connect once (ssh \(host)) and retry")
         }
-        var policy = store.policy(name: key.name)
+        var policy = try store.loadPolicyForMutation(name: key.name)
         let added = hostKeys.filter { !policy.pinnedHostKeys.contains($0) }
         policy.pinnedHostKeys.append(contentsOf: added)
         try store.savePolicy(policy, name: key.name)
@@ -365,7 +365,7 @@ do {
             fail("usage: fob unpin <name>")
         }
         let key = try store.find(name: name)
-        var policy = store.policy(name: key.name)
+        var policy = try store.loadPolicyForMutation(name: key.name)
         policy.pinnedHostKeys = []
         try store.savePolicy(policy, name: key.name)
         print("Removed all pins from key '\(key.name)'.")
@@ -374,7 +374,7 @@ do {
         let rest = Array(arguments.dropFirst())
         guard rest.count == 2 else { fail("usage: fob reuse <name> <seconds|off>") }
         let key = try store.find(name: rest[0])
-        var policy = store.policy(name: key.name)
+        var policy = try store.loadPolicyForMutation(name: key.name)
         if rest[1] == "off" {
             policy.reuseSeconds = nil
             try store.savePolicy(policy, name: key.name)
@@ -392,7 +392,7 @@ do {
         let rest = Array(arguments.dropFirst())
         guard rest.count == 2 else { fail("usage: fob namespaces <name> <any|none|ns1,ns2,...>") }
         let key = try store.find(name: rest[0])
-        var policy = store.policy(name: key.name)
+        var policy = try store.loadPolicyForMutation(name: key.name)
         switch rest[1].lowercased() {
         case "any": policy.allowedNamespaces = nil
         case "none": policy.allowedNamespaces = []
@@ -516,7 +516,7 @@ do {
             // A fob:<name> allowed_signers line ⟺ signing key; carry its principal. nil ⟹ auth-
             // only, so don't touch allowed_signers (avoids adding a spurious line).
             let signingEmail = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
-            try store.savePolicy(store.policy(name: name), name: temp) // carry pin/reuse/namespaces
+            try store.savePolicy(try store.loadPolicyForMutation(name: name), name: temp) // carry pin/reuse/namespaces (fail closed)
             try store.rename(from: name, to: "\(name).retired")        // old aside (recoverable)
             try store.rename(from: temp, to: name)                     // new takes the name
             try store.remove(name: "\(name).retired")                  // destroy the old key
@@ -541,7 +541,7 @@ do {
         let keys = try store.all()
         if keys.isEmpty { print("No keys yet.") }
         for key in keys {
-            let policy = store.policy(name: key.name)
+            let policy = store.displayPolicy(name: key.name)
             var parts: [String] = []
             if policy.pinnedHostKeys.isEmpty {
                 parts.append("not pinned (any destination)")

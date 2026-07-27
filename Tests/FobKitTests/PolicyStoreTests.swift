@@ -54,7 +54,7 @@ final class PolicyStoreTests: XCTestCase {
             return XCTFail("a throwing store must surface as .unreadable (fail closed)")
         }
         // Display convenience still degrades to the open default.
-        XCTAssertTrue(store.policy(name: "k").pinnedHostKeys.isEmpty)
+        XCTAssertTrue(store.displayPolicy(name: "k").pinnedHostKeys.isEmpty)
     }
 
     func testSavePolicyStoresAndDefaultRemoves() throws {
@@ -110,8 +110,8 @@ final class PolicyStoreTests: XCTestCase {
         // User unticks git-only on a signing-only key: allowedNamespaces nil BUT choice made.
         try store.savePolicy(KeyPolicy(namespaceChoiceMade: true), name: "k")
         // It must persist (not be dropped as "default") so it isn't re-hardened later.
-        XCTAssertEqual(store.policy(name: "k").namespaceChoiceMade, true)
-        XCTAssertFalse(store.policy(name: "k").shouldAutoHardenSigning(isSigningOnly: true))
+        XCTAssertEqual(store.displayPolicy(name: "k").namespaceChoiceMade, true)
+        XCTAssertFalse(store.displayPolicy(name: "k").shouldAutoHardenSigning(isSigningOnly: true))
     }
 
     // MARK: - Keychain availability probe is safe on any build

@@ -218,15 +218,27 @@ public struct KeyStore {
         let toKey = keysDirectory.appendingPathComponent("\(to).key")
         guard fm.fileExists(atPath: fromKey.path) else { throw KeyStoreError.notFound(from) }
         guard !fm.fileExists(atPath: toKey.path) else { throw KeyStoreError.keyExists(to) }
-        // Move the (opaque) enclave blob.
+
+        // Load the policy BEFORE moving anything: an unreadable policy throws here (via
+        // load), so we never leave a key renamed with its pins silently dropped. `nil`
+        // means genuinely no record (open) — nothing to migrate.
+        let policy = try policyStore.load(name: from)
+
+        // Move the (opaque) enclave blob, then migrate the policy transactionally: on any
+        // failure, move the blob back and rethrow so name and policy stay in lock-step.
         try fm.moveItem(at: fromKey, to: toKey)
-        // Migrate the policy through the store (handles both file- and keychain-backed).
-        if let policy = try? policyStore.load(name: from) {
-            try policyStore.save(policy, name: to)
+        do {
+            if let policy { try policyStore.save(policy, name: to) }
             try policyStore.remove(name: from)
+        } catch {
+            try? policyStore.remove(name: to)          // undo a partial policy write
+            try? fm.moveItem(at: toKey, to: fromKey)   // undo the blob move
+            throw error
         }
+
         // Move the in-store public key, retargeting its `fob:<name>` comment textually — the
-        // base64 blob is unchanged, so no enclave access is needed.
+        // base64 blob is unchanged, so no enclave access is needed. Cosmetic vs. the security
+        // record above, so a failure here doesn't roll back the (already consistent) rename.
         let fromPub = keysDirectory.appendingPathComponent("\(from).pub")
         if let text = try? String(contentsOf: fromPub, encoding: .utf8) {
             let rewritten = text.replacingOccurrences(of: "fob:\(from)", with: "fob:\(to)")
@@ -243,6 +255,7 @@ public enum KeyStoreError: LocalizedError {
     case keyExists(String)
     case notFound(String)
     case invalidName(String)
+    case policyUnreadable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -256,6 +269,8 @@ public enum KeyStoreError: LocalizedError {
             return "no key named '\(name)'"
         case .invalidName(let name):
             return "invalid key name '\(name)' (letters, digits, '.', '_', '-'; must not start with '-')"
+        case .policyUnreadable(let name):
+            return "the policy for '\(name)' is unreadable — refusing to change it until that's fixed, so its pins aren't silently dropped"
         }
     }
 }

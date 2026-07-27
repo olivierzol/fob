@@ -106,18 +106,53 @@ public enum SSHFormat {
 }
 
 /// The SSHSIG signing envelope (`ssh-keygen -Y sign`, which is how git signs commits).
-/// The blob handed to the agent starts with the literal magic "SSHSIG" followed by a
-/// namespace string ("git" for commits) — letting the agent tell a *signature*
-/// operation apart from an SSH *authentication* and label / gate it accordingly.
+/// The blob handed to the agent is the signed-data structure from PROTOCOL.sshsig:
+///
+///     "SSHSIG"  string namespace  string reserved
+///     string hash_algorithm  string H(message)
+///
+/// The magic + namespace exist to keep an SSHSIG signature from being usable in another
+/// protocol (domain separation). We therefore parse it *strictly*: a blob that carries
+/// the magic but doesn't conform is treated as malformed and refused — never signed under
+/// a misleading "git commit" label, and never allowed to fall through to the SSH-auth path.
 enum SSHSIG {
     static let magic = Data("SSHSIG".utf8)
 
-    /// The namespace of an SSHSIG blob, or nil if `data` isn't one (e.g. it's an
-    /// ordinary SSH authentication payload, which never starts with this magic).
-    static func namespace(of data: Data) -> String? {
-        guard data.count > magic.count, data.prefix(magic.count) == magic else { return nil }
+    struct Parsed: Equatable {
+        let namespace: String
+        let hashAlgorithm: String // "sha256" or "sha512"
+    }
+
+    /// The result of inspecting a to-be-signed blob.
+    enum Classification: Equatable {
+        case notSSHSIG          // no magic → an ordinary SSH authentication payload
+        case malformed          // magic present but the envelope is invalid → refuse
+        case valid(Parsed)      // a well-formed SSHSIG envelope → sign, gated by namespace
+    }
+
+    /// Digest sizes per hash algorithm (SHA-256 → 32 bytes, SHA-512 → 64).
+    private static let digestSize = ["sha256": 32, "sha512": 64]
+
+    /// Strictly classify `data`. Requires, after the magic: a non-empty valid-UTF-8
+    /// namespace, a `reserved` string, `hash_algorithm ∈ {sha256, sha512}`, an `H(message)`
+    /// whose length matches that algorithm, and no trailing bytes.
+    static func classify(_ data: Data) -> Classification {
+        guard data.count >= magic.count, data.prefix(magic.count) == magic else { return .notSSHSIG }
         var reader = SSHReader(Data(data.dropFirst(magic.count)))
-        guard let namespace = try? reader.readString() else { return nil }
-        return String(decoding: namespace, as: UTF8.self)
+        do {
+            let namespaceData = try reader.readString()
+            guard !namespaceData.isEmpty,
+                  let namespace = String(bytes: namespaceData, encoding: .utf8) else { return .malformed }
+            _ = try reader.readString() // reserved (any value, typically empty)
+            let algoData = try reader.readString()
+            guard let algo = String(bytes: algoData, encoding: .utf8),
+                  let wantDigest = digestSize[algo] else { return .malformed }
+            let digest = try reader.readString()
+            guard digest.count == wantDigest else { return .malformed }
+            guard reader.isAtEnd else { return .malformed } // reject trailing bytes
+            return .valid(Parsed(namespace: namespace, hashAlgorithm: algo))
+        } catch {
+            return .malformed
+        }
     }
 }

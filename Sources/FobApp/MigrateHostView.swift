@@ -22,6 +22,7 @@ struct MigrateHostView: View {
     @State private var verified: Status?
     @State private var pinned = false
     @State private var pinNote: String?
+    @State private var firstUse = false   // host wasn't in known_hosts before verify (TOFU)
     @State private var retired: Status?
 
     // Git-host flow state.
@@ -151,6 +152,11 @@ struct MigrateHostView: View {
         // Step 4 — pin + retire + sign hop
         if verified?.ok == true {
             step(4, "Lock it down") {
+                if firstUse, !pinned, let fp = state.hostKeyFingerprint(c) {
+                    Label("First connection to \(c.host) — its host key was trusted on first use, not verified. If this host is security-sensitive, confirm this fingerprint against a trusted source before pinning:\n\(fp)",
+                          systemImage: "exclamationmark.shield")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 10) {
                     Button(pinned ? "Pinned ✓" : "Pin \(alias) → \(c.host)") { runPin(c) }.disabled(pinned)
                     if let pinNote {
@@ -230,6 +236,7 @@ struct MigrateHostView: View {
     }
 
     private func runVerifyGit(_ c: AppState.MigrationCandidate) {
+        firstUse = !state.hostIsKnown(c)   // capture before the connection trusts it (accept-new)
         busy = true
         Task {
             let result = await state.verifyGitHost(c)
@@ -397,6 +404,7 @@ struct MigrateHostView: View {
     }
 
     private func runVerify(_ c: AppState.MigrationCandidate) {
+        firstUse = !state.hostIsKnown(c)   // capture before the connection trusts it (accept-new)
         busy = true
         Task {
             if let msg = await state.verifyMigration(c) {

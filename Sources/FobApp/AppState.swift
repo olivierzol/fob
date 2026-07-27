@@ -168,7 +168,7 @@ final class AppState: ObservableObject {
         guard let store else { keys = []; return }
         let all = (try? store.all()) ?? []
         keys = all.map { key in
-            let policy = store.policy(name: key.name)
+            let policy = store.displayPolicy(name: key.name)
             // Prefer the alias matching the key name so a key pinned to a shared HostName
             // (github-ousson / github-feedly both → github.com) shows its own alias.
             let names = policy.pinnedHostKeys.map {
@@ -355,7 +355,7 @@ final class AppState: ObservableObject {
             return "“\(host)” isn't in ~/.ssh/known_hosts yet — connect once (ssh \(alias)) first, then pin."
         }
         do {
-            var policy = store.policy(name: alias)
+            var policy = try store.loadPolicyForMutation(name: alias)
             policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
             try store.savePolicy(policy, name: alias)
             refreshKeys()
@@ -561,18 +561,48 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The `["--", "user@host"]` ssh destination for a candidate, or nil if the user or host
+    /// (possibly parsed from an existing ~/.ssh/config) is unsafe as an ssh argument — a
+    /// leading '-' or any control/whitespace char. Validated right before exec; the `--`
+    /// terminates option parsing as a second line of defense (CG-03).
+    private func sshDestination(_ c: MigrationCandidate) -> [String]? {
+        guard HostSetup.isValidHostToken(c.user), HostSetup.isValidHostToken(c.host) else { return nil }
+        return ["--", "\(c.user)@\(c.host)"]
+    }
+
+    /// Does this host already have a key in known_hosts? When it does, a verify connects
+    /// with StrictHostKeyChecking=yes (reject a changed/MITM key) instead of trusting on
+    /// first use; when it doesn't, the connection is genuinely first-use (TOFU), which the
+    /// UI labels honestly rather than presenting as verified identity (CG-04).
+    func hostIsKnown(_ c: MigrationCandidate) -> Bool {
+        !HostResolver.knownHostKeys(for: c.host, port: c.port == 22 ? nil : c.port).isEmpty
+    }
+
+    private func strictHostKeyOption(_ c: MigrationCandidate) -> String {
+        "StrictHostKeyChecking=" + (hostIsKnown(c) ? "yes" : "accept-new")
+    }
+
+    /// The `SHA256:…` fingerprint of the host's current known_hosts key, for a TOFU caution.
+    func hostKeyFingerprint(_ c: MigrationCandidate) -> String? {
+        HostResolver.fingerprint(forHost: c.host, port: c.port == 22 ? nil : c.port)
+    }
+
+    private static let unsafeDestinationMessage =
+        "The username or hostname in ~/.ssh/config contains characters that aren't safe to pass to ssh (a leading “-” or whitespace). Fix the entry and try again."
+
     /// Prove fob works for this host by connecting with ONLY the fob identity (not the
     /// old-key fallback), so a green check means fob specifically succeeded. Touch ID
     /// prompts. Returns nil on success, else an error message.
     func verifyMigration(_ c: MigrationCandidate) async -> String? {
         guard let store else { return "Key store unavailable." }
+        guard let dest = sshDestination(c) else { return Self.unsafeDestinationMessage }
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", strictHostKeyOption(c),
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", fobPubURL(c.alias).path]
         if c.port != 22 { args += ["-p", String(c.port)] }
-        args += ["\(c.user)@\(c.host)", "true"]
+        args += dest + ["true"]
         let (status, output) = await runProcess("/usr/bin/ssh", args)
         guard status == 0 else {
             let tail = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -649,13 +679,14 @@ final class AppState: ObservableObject {
     /// even when it works). Connects with ONLY the fob identity so a pass means fob.
     func verifyGitHost(_ c: MigrationCandidate) async -> (ok: Bool, message: String) {
         guard let store else { return (false, "Key store unavailable.") }
+        guard let dest = sshDestination(c) else { return (false, Self.unsafeDestinationMessage) }
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", strictHostKeyOption(c),
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", fobPubURL(c.alias).path, "-T"]
         if c.port != 22 { args += ["-p", String(c.port)] }
-        args += ["\(c.user)@\(c.host)"]
+        args += dest
         let (_, output) = await runProcess("/usr/bin/ssh", args)
         let greeting = HostSetup.parseSSHGreeting(output)
         if greeting.authenticated {
@@ -951,7 +982,7 @@ final class AppState: ObservableObject {
         return SigningInfo(
             name: name, pubLine: pubLine, pubPath: pubURL.path,
             signerProgram: signer,
-            gitOnly: store.policy(name: name).allowedNamespaces == ["git"])
+            gitOnly: store.displayPolicy(name: name).allowedNamespaces == ["git"])
     }
 
     /// Restrict a key to git-commit signatures only (["git"]), or clear the restriction.
@@ -960,7 +991,7 @@ final class AppState: ObservableObject {
     /// auto-hardening it again; auto-harden passes `explicit: false`.
     func setGitSigningOnly(_ on: Bool, name: String, explicit: Bool = true) {
         run { store in
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.allowedNamespaces = on ? ["git"] : nil
             if explicit { policy.namespaceChoiceMade = true }
             try store.savePolicy(policy, name: name)
@@ -972,7 +1003,9 @@ final class AppState: ObservableObject {
     /// made an explicit namespace choice. Returns the resulting git-only state for the toggle.
     func autoHardenSigningIfEligible(name: String) async -> Bool {
         guard let store else { return false }
-        let policy = store.policy(name: name)
+        // Fail closed: if the policy is unreadable, don't auto-harden (which would write a
+        // fresh policy built on the open default and drop any pins).
+        guard let policy = try? store.loadPolicyForMutation(name: name) else { return false }
         let signingOnly = await keyUsage(name: name).authHosts.isEmpty
         if policy.shouldAutoHardenSigning(isSigningOnly: signingOnly) {
             setGitSigningOnly(true, name: name, explicit: false)
@@ -1072,16 +1105,17 @@ final class AppState: ObservableObject {
     /// live and nothing has been removed. Handles both servers and git hosts.
     func verifyRotationKey(_ c: MigrationCandidate) async -> (ok: Bool, message: String) {
         guard let store else { return (false, "Key store unavailable.") }
+        guard let dest = sshDestination(c) else { return (false, Self.unsafeDestinationMessage) }
         let tempPub = fobPubURL(rotationTempName(c.alias)).path
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", strictHostKeyOption(c),
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", tempPub]
         if c.isGitHost {
             args += ["-T"]
             if c.port != 22 { args += ["-p", String(c.port)] }
-            args += ["\(c.user)@\(c.host)"]
+            args += dest
             let (_, output) = await runProcess("/usr/bin/ssh", args)
             if HostSetup.parseSSHGreeting(output).authenticated {
                 return (true, "New key authenticated with fob — safe to swap.")
@@ -1091,7 +1125,7 @@ final class AppState: ObservableObject {
                 + (tail.isEmpty ? "" : "\n\(tail)"))
         }
         if c.port != 22 { args += ["-p", String(c.port)] }
-        args += ["\(c.user)@\(c.host)", "true"]
+        args += dest + ["true"]
         let (status, output) = await runProcess("/usr/bin/ssh", args)
         guard status == 0 else {
             let tail = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1117,7 +1151,7 @@ final class AppState: ObservableObject {
         // carried onto the new line. nil ⟹ auth-only key, so we don't touch allowed_signers.
         let signingEmail = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
         do {
-            copyPolicy(from: name, to: temp)               // new key inherits pin/reuse/namespaces
+            try copyPolicy(from: name, to: temp)           // new key inherits pin/reuse/namespaces
             try store.rename(from: name, to: retired)      // move old aside (recoverable)
             try store.rename(from: temp, to: name)         // new key takes the name
             try store.remove(name: retired)                // destroy the old enclave key
@@ -1148,9 +1182,12 @@ final class AppState: ObservableObject {
     }
 
     /// Copy a key's whole policy (pin/reuse/namespaces + choice marker) to another name.
-    private func copyPolicy(from: String, to: String) {
+    /// Throws (fail closed) if the source policy is unreadable, so rotation can't silently
+    /// hand the new key an open default and drop the old key's pins.
+    private func copyPolicy(from: String, to: String) throws {
         guard let store else { return }
-        try? store.savePolicy(store.policy(name: from), name: to)
+        let policy = try store.loadPolicyForMutation(name: from)
+        try store.savePolicy(policy, name: to)
     }
 
     /// Append an entry to ~/.ssh/allowed_signers (idempotent) so signed commits verify locally.
@@ -1207,7 +1244,7 @@ final class AppState: ObservableObject {
 
     func unpin(name: String) {
         run { store in
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.pinnedHostKeys = []
             try store.savePolicy(policy, name: name)
         }
@@ -1269,7 +1306,7 @@ final class AppState: ObservableObject {
                     + "must be known first. Connect to it once — e.g. `ssh \(host)` "
                     + "and accept the prompt — or run `fob setup \(host)`. Then pin again.")
             }
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
             try store.savePolicy(policy, name: name)
         }
@@ -1277,7 +1314,7 @@ final class AppState: ObservableObject {
 
     func setReuse(name: String, seconds: Int) {
         run { store in
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.reuseSeconds = seconds > 0 ? Double(min(seconds, 300)) : nil
             try store.savePolicy(policy, name: name)
         }
