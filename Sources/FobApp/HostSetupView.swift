@@ -33,17 +33,19 @@ struct HostSetupView: View {
     @State private var bareResult: AppState.GeneratedKey?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                FobKeyGlyph(size: 28)
-                Text(headerTitle).font(.title2.weight(.semibold))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    FobKeyGlyph(size: 28)
+                    Text(headerTitle).font(.title2.weight(.semibold))
+                }
+                if let bareResult { bareResultView(bareResult) }
+                else if let result { resultView(result) }
+                else { formView }
             }
-            if let bareResult { bareResultView(bareResult) }
-            else if let result { resultView(result) }
-            else { formView }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear(perform: applyPrefill)
     }
 

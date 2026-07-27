@@ -23,15 +23,17 @@ struct SigningSetupView: View {
     private var keyName: String { state.signingSetupKey ?? "" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                FobKeyGlyph(size: 28)
-                Text("Commit signing — \(keyName)").font(.title2.weight(.semibold))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    FobKeyGlyph(size: 28)
+                    Text("Commit signing — \(keyName)").font(.title2.weight(.semibold))
+                }
+                if let info { content(info) } else { Text("Key unavailable.").foregroundStyle(.secondary) }
             }
-            if let info { content(info) } else { Text("Key unavailable.").foregroundStyle(.secondary) }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { load() }
         .onChange(of: state.signingSetupKey) { _ in load() }
     }

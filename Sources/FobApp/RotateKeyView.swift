@@ -34,27 +34,29 @@ struct RotateKeyView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                FobKeyGlyph(size: 28)
-                Text("Rotate — \(name)").font(.title2.weight(.semibold))
-            }
-            if done { doneView }
-            else if prep == nil { startView }
-            else {
-                switch role {
-                case .signing: signingFlow
-                case .server: serverFlow
-                case .git: gitFlow
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    FobKeyGlyph(size: 28)
+                    Text("Rotate — \(name)").font(.title2.weight(.semibold))
+                }
+                if done { doneView }
+                else if prep == nil { startView }
+                else {
+                    switch role {
+                    case .signing: signingFlow
+                    case .server: serverFlow
+                    case .git: gitFlow
+                    }
+                }
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if let error {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            }
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { candidate = state.migrationCandidate(alias: name) }
         .onDisappear { if prep != nil && !done { state.cancelRotation(name: name) } } // drop an abandoned temp key
     }
