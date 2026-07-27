@@ -3,6 +3,23 @@ import XCTest
 @testable import FobKit
 
 final class HostSetupTests: XCTestCase {
+    func testIsValidHostTokenRejectsOptionAndWhitespaceInjection() {
+        // Valid tokens.
+        XCTAssertTrue(HostSetup.isValidHostToken("example.com"))
+        XCTAssertTrue(HostSetup.isValidHostToken("git"))
+        XCTAssertTrue(HostSetup.isValidHostToken("192.168.1.10"))
+        XCTAssertTrue(HostSetup.isValidHostToken("user_1"))
+        // Leading dash → would be parsed as an ssh option.
+        XCTAssertFalse(HostSetup.isValidHostToken("-oProxyCommand=evil"))
+        XCTAssertFalse(HostSetup.isValidHostToken("-"))
+        // Whitespace/control — space, tab, newline (not just the literal space).
+        XCTAssertFalse(HostSetup.isValidHostToken("a b"))
+        XCTAssertFalse(HostSetup.isValidHostToken("a\tb"))
+        XCTAssertFalse(HostSetup.isValidHostToken("a\nProxyCommand x"))
+        XCTAssertFalse(HostSetup.isValidHostToken("a\r"))
+        XCTAssertFalse(HostSetup.isValidHostToken(""))
+    }
+
     func testConfigBlockOmitsDefaultPort() {
         let block = HostSetup.configBlock(alias: "web", host: "h.example", user: "u",
                                           pubPath: "/p.pub", socketPath: "/s.sock")

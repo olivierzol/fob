@@ -32,6 +32,11 @@ enum Setup {
         let old = parsed.identityFiles.first(where: { !$0.contains("/fob_") })
         let isGitProvider = HostSetup.isGitHost(hostName: host, user: user)
         let settingsURL = HostSetup.sshKeySettingsURL(forHost: host)
+        // Values parsed from an existing ~/.ssh/config are revalidated before they can
+        // become ssh arguments — a leading '-' or whitespace would otherwise be parsed as
+        // an ssh option (CG-03).
+        guard HostSetup.isValidHostToken(host) else { throw SetupError.invalidHost(host) }
+        guard HostSetup.isValidHostToken(user) else { throw SetupError.invalidUser(user) }
 
         // `--retire`: just comment out the old IdentityFile (run after a verified migration).
         if retire {
@@ -123,7 +128,7 @@ enum Setup {
         } else if confirm("Test the connection now? (Touch ID will prompt)") {
             let args = ["-o", "ConnectTimeout=10", "-o", "IdentitiesOnly=yes",
                         "-o", "IdentityAgent=\(store.socketPath)", "-i", pubURL.path]
-                + portArg + ["\(user)@\(host)", "true"]
+                + portArg + ["--", "\(user)@\(host)", "true"]
             if runInteractive("/usr/bin/ssh", args) == 0 {
                 print("✅ fob works for \(alias). Your old key is still a fallback.")
             } else {
@@ -361,7 +366,7 @@ enum Setup {
             : ["-o", "ConnectTimeout=10",
                "-o", "IdentityAgent=\(store.socketPath)",
                "-o", "IdentitiesOnly=yes",
-               "-i", pubURL.path, destination, "true"]
+               "-i", pubURL.path, "--", destination, "true"]
         if runInteractive("/usr/bin/ssh", sshArgs) == 0 {
             print("")
             print("✅ \(destination) accepted the Secure Enclave key. You're all set\(aliasConfigured ? ": ssh \(alias)" : ".")")

@@ -561,18 +561,31 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The `["--", "user@host"]` ssh destination for a candidate, or nil if the user or host
+    /// (possibly parsed from an existing ~/.ssh/config) is unsafe as an ssh argument — a
+    /// leading '-' or any control/whitespace char. Validated right before exec; the `--`
+    /// terminates option parsing as a second line of defense (CG-03).
+    private func sshDestination(_ c: MigrationCandidate) -> [String]? {
+        guard HostSetup.isValidHostToken(c.user), HostSetup.isValidHostToken(c.host) else { return nil }
+        return ["--", "\(c.user)@\(c.host)"]
+    }
+
+    private static let unsafeDestinationMessage =
+        "The username or hostname in ~/.ssh/config contains characters that aren't safe to pass to ssh (a leading “-” or whitespace). Fix the entry and try again."
+
     /// Prove fob works for this host by connecting with ONLY the fob identity (not the
     /// old-key fallback), so a green check means fob specifically succeeded. Touch ID
     /// prompts. Returns nil on success, else an error message.
     func verifyMigration(_ c: MigrationCandidate) async -> String? {
         guard let store else { return "Key store unavailable." }
+        guard let dest = sshDestination(c) else { return Self.unsafeDestinationMessage }
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", fobPubURL(c.alias).path]
         if c.port != 22 { args += ["-p", String(c.port)] }
-        args += ["\(c.user)@\(c.host)", "true"]
+        args += dest + ["true"]
         let (status, output) = await runProcess("/usr/bin/ssh", args)
         guard status == 0 else {
             let tail = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -649,13 +662,14 @@ final class AppState: ObservableObject {
     /// even when it works). Connects with ONLY the fob identity so a pass means fob.
     func verifyGitHost(_ c: MigrationCandidate) async -> (ok: Bool, message: String) {
         guard let store else { return (false, "Key store unavailable.") }
+        guard let dest = sshDestination(c) else { return (false, Self.unsafeDestinationMessage) }
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", fobPubURL(c.alias).path, "-T"]
         if c.port != 22 { args += ["-p", String(c.port)] }
-        args += ["\(c.user)@\(c.host)"]
+        args += dest
         let (_, output) = await runProcess("/usr/bin/ssh", args)
         let greeting = HostSetup.parseSSHGreeting(output)
         if greeting.authenticated {
@@ -1074,6 +1088,7 @@ final class AppState: ObservableObject {
     /// live and nothing has been removed. Handles both servers and git hosts.
     func verifyRotationKey(_ c: MigrationCandidate) async -> (ok: Bool, message: String) {
         guard let store else { return (false, "Key store unavailable.") }
+        guard let dest = sshDestination(c) else { return (false, Self.unsafeDestinationMessage) }
         let tempPub = fobPubURL(rotationTempName(c.alias)).path
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                     "-o", "StrictHostKeyChecking=accept-new",
@@ -1083,7 +1098,7 @@ final class AppState: ObservableObject {
         if c.isGitHost {
             args += ["-T"]
             if c.port != 22 { args += ["-p", String(c.port)] }
-            args += ["\(c.user)@\(c.host)"]
+            args += dest
             let (_, output) = await runProcess("/usr/bin/ssh", args)
             if HostSetup.parseSSHGreeting(output).authenticated {
                 return (true, "New key authenticated with fob — safe to swap.")
@@ -1093,7 +1108,7 @@ final class AppState: ObservableObject {
                 + (tail.isEmpty ? "" : "\n\(tail)"))
         }
         if c.port != 22 { args += ["-p", String(c.port)] }
-        args += ["\(c.user)@\(c.host)", "true"]
+        args += dest + ["true"]
         let (status, output) = await runProcess("/usr/bin/ssh", args)
         guard status == 0 else {
             let tail = output.trimmingCharacters(in: .whitespacesAndNewlines)
