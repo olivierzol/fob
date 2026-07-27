@@ -11,6 +11,8 @@
 &nbsp;![Swift 5.9](https://img.shields.io/badge/Swift-5.9-f05138?logo=swift&logoColor=white)
 &nbsp;![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)
 
+[**getfob.app**](https://getfob.app) — website &amp; install
+
 </div>
 
 The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, a tamper-evident audit log, and a read-only checkup of your SSH setup — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
