@@ -121,6 +121,19 @@ extension HostResolver {
         return hostKeys(inKnownHosts: contents, host: host, port: port)
     }
 
+    /// The OpenSSH-style `SHA256:…` fingerprint of a host key blob (base64, no padding) —
+    /// the same form `ssh` prints on a first connection, so a user can compare it against a
+    /// trusted source before pinning a trust-on-first-use host (CG-04).
+    public static func fingerprint(ofHostKey blob: Data) -> String {
+        "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "="))
+    }
+
+    /// The fingerprint of the host's first recorded known_hosts key, or nil if none.
+    public static func fingerprint(forHost host: String, port: Int? = nil) -> String? {
+        knownHostKeys(for: host, port: port).first.map(fingerprint(ofHostKey:))
+    }
+
     /// Pure matcher over known_hosts contents (testable without touching the filesystem).
     static func hostKeys(inKnownHosts contents: String, host: String, port: Int?) -> [Data] {
         var blobs: [Data] = []

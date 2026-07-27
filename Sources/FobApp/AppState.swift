@@ -570,6 +570,23 @@ final class AppState: ObservableObject {
         return ["--", "\(c.user)@\(c.host)"]
     }
 
+    /// Does this host already have a key in known_hosts? When it does, a verify connects
+    /// with StrictHostKeyChecking=yes (reject a changed/MITM key) instead of trusting on
+    /// first use; when it doesn't, the connection is genuinely first-use (TOFU), which the
+    /// UI labels honestly rather than presenting as verified identity (CG-04).
+    func hostIsKnown(_ c: MigrationCandidate) -> Bool {
+        !HostResolver.knownHostKeys(for: c.host, port: c.port == 22 ? nil : c.port).isEmpty
+    }
+
+    private func strictHostKeyOption(_ c: MigrationCandidate) -> String {
+        "StrictHostKeyChecking=" + (hostIsKnown(c) ? "yes" : "accept-new")
+    }
+
+    /// The `SHA256:…` fingerprint of the host's current known_hosts key, for a TOFU caution.
+    func hostKeyFingerprint(_ c: MigrationCandidate) -> String? {
+        HostResolver.fingerprint(forHost: c.host, port: c.port == 22 ? nil : c.port)
+    }
+
     private static let unsafeDestinationMessage =
         "The username or hostname in ~/.ssh/config contains characters that aren't safe to pass to ssh (a leading “-” or whitespace). Fix the entry and try again."
 
@@ -580,7 +597,7 @@ final class AppState: ObservableObject {
         guard let store else { return "Key store unavailable." }
         guard let dest = sshDestination(c) else { return Self.unsafeDestinationMessage }
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", strictHostKeyOption(c),
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", fobPubURL(c.alias).path]
@@ -664,7 +681,7 @@ final class AppState: ObservableObject {
         guard let store else { return (false, "Key store unavailable.") }
         guard let dest = sshDestination(c) else { return (false, Self.unsafeDestinationMessage) }
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", strictHostKeyOption(c),
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", fobPubURL(c.alias).path, "-T"]
@@ -1091,7 +1108,7 @@ final class AppState: ObservableObject {
         guard let dest = sshDestination(c) else { return (false, Self.unsafeDestinationMessage) }
         let tempPub = fobPubURL(rotationTempName(c.alias)).path
         var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", strictHostKeyOption(c),
                     "-o", "IdentitiesOnly=yes",
                     "-o", "IdentityAgent=\(store.socketPath)",
                     "-i", tempPub]

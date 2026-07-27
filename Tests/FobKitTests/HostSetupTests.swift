@@ -65,6 +65,12 @@ final class HostSetupTests: XCTestCase {
         XCTAssertEqual(blobs("192.168.1.9", 22).count, 1)
     }
 
+    func testHostKeyFingerprintFormat() {
+        // Known SHA-256 of the ASCII bytes "abc" → base64, no padding, "SHA256:" prefix.
+        let fp = HostResolver.fingerprint(ofHostKey: Data("abc".utf8))
+        XCTAssertEqual(fp, "SHA256:ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0")
+    }
+
     func testParseHostBlock() {
         let cfg = """
         Host web
