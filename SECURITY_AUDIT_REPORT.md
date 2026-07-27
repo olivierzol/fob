@@ -70,6 +70,10 @@ State this in the README. It is the single most important thing for users.
 | M-4 | Medium | "Open in Terminal" ran an unquoted shell command built from a `~/.ssh/config` alias → click-to-RCE | **Fixed** (2026-07-13, shell-quoted) |
 | L-7 | Low | Migrate/verify read host/user/alias from `~/.ssh/config` without the leading-`-` revalidation the CLI applies | **Documented** (same-UID) |
 | I-3 | Info | "Verify" success is read from the remote server's greeting text, not a crypto proof | **By design** (usability check) |
+| CG-01 | Medium | SSHSIG parsed loosely (magic + namespace only) → agent signed an unvalidated blob under a "git commit" label | **Fixed** (PR #22) |
+| CG-02 | Medium | Policy read-modify-write paths (pin/reuse/namespace/rotation) still failed **open** — extends M-3 | **Fixed** (PR #22) |
+| CG-03 | Low | `User`/`HostName` from `~/.ssh/config` not revalidated before `ssh` — same issue as L-7 | **Fixed** (PR #22) |
+| CG-04 | Low | First-use `accept-new` could pin a man-in-the-middle host key | **Fixed** (PR #22) |
 
 > **Remediation (2026-07-10).** All medium and low code-level findings are fixed in
 > commit following this report; see the per-finding "Fix applied" notes below. A
@@ -384,6 +388,91 @@ stripped by `sanitizeForDisplay` on the error path). No action needed.
 - **URL opening** (`sshKeySettingsURL` → `NSWorkspace.open`): only known providers get a
   URL, always `https://` scheme; a poisoned config HostName could at worst open an
   arbitrary https page on click (same-UID). Minor.
+
+## Re-audit 2026-07-27 — independent audit (ChatGPT)
+
+A second, independent audit (ChatGPT / a GPT-5-class model) reviewed the v0.16.0 tree at
+commit `e3d87b0`. It found **no critical or high-severity issue** — consistent with this
+report — and raised **two medium and two low** items. Each was verified against the code
+before any change, and **all four are fixed in PR #22** (with two follow-ups in PR #24).
+Notably, the second audit both surfaced a genuinely new issue (CG-01) *and* pushed us to
+close items the first audit had accepted as documented (CG-03 = L-7).
+
+### CG-01 — Loose SSHSIG parsing → mislabeled signing *(new; Fixed)*
+
+**Files:** `Sources/FobKit/SSHWire.swift`, `Sources/FobKit/Agent.swift`.
+
+`SSHSIG.namespace(of:)` recognised an SSHSIG request from just the `"SSHSIG"` magic + the
+first (namespace) string, and the agent then signed the **entire** attacker-supplied blob
+under a "sign a git commit" label — without validating `reserved`, `hash_algorithm`, the
+digest length, or rejecting trailing bytes, contrary to the OpenSSH SSHSIG spec's strict
+parse. Impact is limited (a cross-protocol reuse needs another protocol that accepts
+`SSHSIG`-prefixed data), but it contradicts fob's own domain-separation promise.
+
+**✅ Fix.** A strict `SSHSIG.classify()` returns `notSSHSIG` / `malformed` / `valid` and
+requires a non-empty valid-UTF-8 namespace, a `reserved` string, `hash_algorithm ∈
+{sha256, sha512}`, a matching 32/64-byte digest, and EOF. A malformed `SSHSIG`-prefixed
+request is **refused** (audited `refused-malformed`), never signed and never fallen through
+to the SSH-auth path. The namespace is sanitised before it reaches prompts/notifications/
+audit. Rejection tests cover namespace-only (the previously-accepted input), trailing bytes,
+empty namespace, bad UTF-8, unsupported algorithm, and wrong digest length.
+
+### CG-02 — Policy mutation/rotation still failed open *(extends M-3; Fixed)*
+
+**Files:** `Sources/FobKit/KeyPolicy.swift`, `Sources/FobKit/KeyStore.swift`, callers in the
+app + CLI.
+
+M-3 made the **signing** path fail closed on an unreadable policy. But every
+**read-modify-write** path (pin/unpin, reuse, namespaces, auto-harden, setup-pin, rotation)
+used the display helper that maps unreadable → the open default — so a transient/corrupt
+read followed by any later mutation silently rewrote the record **without its pins**,
+re-opening the key. `KeyStore.rename` compounded it: it moved the key blob before migrating
+the policy under a swallowed `try?`.
+
+**✅ Fix.** `KeyStore.loadPolicyForMutation` throws on an unreadable policy; the display
+helper was renamed `displayPolicy(name:)` so the defaulting behaviour can't be grabbed by a
+mutation. Every mutation routes through the throwing loader and surfaces the error instead of
+proceeding. `rename` loads the policy before moving anything and rolls the blob back on
+failure. A faulty-`PolicyStore` test proves mutations throw and `rename` leaves both name and
+policy unchanged.
+
+### CG-03 — Config values could become `ssh` options *(this is L-7; now Fixed)*
+
+**Files:** `Sources/FobKit/HostSetup.swift`, ssh-invoking paths in the app + CLI.
+
+This is exactly **L-7**, which the 2026-07-13 re-audit *documented* as same-UID/out-of-scope
+and deliberately left un-gated. The second audit re-raised it, and on reflection it's a cheap,
+worthwhile hardening: `isValidHostToken` only blocked empty/space/leading-`-` and wasn't
+applied to `User`/`HostName` parsed from `~/.ssh/config` before `"\(user)@\(host)"`.
+
+**✅ Fix.** `isValidHostToken` now also rejects any ASCII control/whitespace (not just the
+literal space); it's applied to user/host immediately before every `ssh` subprocess (app
+verify/rotate flows + the CLI `adopt` path), and `--` is inserted before the destination.
+Tests cover leading-dash, tab, newline, and option-shaped values.
+
+### CG-04 — First-use `accept-new` could pin a MITM key *(Fixed)*
+
+**Files:** `Sources/FobApp/AppState.swift`, `Sources/FobApp/MigrateHostView.swift`,
+`Sources/FobKit/KeyPolicy.swift`.
+
+The verify flows forced `StrictHostKeyChecking=accept-new` then offered to pin whatever key
+appeared, so a first-use connection (or a MITM during one) could be presented as verified and
+pinned — a sharper framing of the `accept-new` behaviour noted in the 2026-07-13 new-surface
+review.
+
+**✅ Fix.** Verify uses `StrictHostKeyChecking=yes` when the host already has a `known_hosts`
+key (reject a changed key); only genuinely first-seen hosts use `accept-new`, and the Migrate
+UI then labels the connection as trust-on-first-use (not "verified") and shows the host key's
+`SHA256:…` fingerprint to confirm out-of-band before pinning.
+
+### Follow-ups (PR #24)
+
+Prompted by a real report — `ssh <host>` printing "UNPROTECTED PRIVATE KEY FILE … 0644 …
+will be ignored" and dropping to a password whenever the agent was momentarily down (ssh
+falls back to loading the `IdentityFile` `.pub` as a private key). fob now **exports
+`fob_<name>.pub` as `0600`**, turning that fallback into a clean skip, and the **checkup flags
+any existing group/other-readable fob pub** with a `chmod 600` fix. `allowed_signers` stays
+`0644` (a config file, not an `IdentityFile`).
 
 ## Prioritized recommendations
 
