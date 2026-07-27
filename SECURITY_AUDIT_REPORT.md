@@ -2,11 +2,15 @@
 
 **Scope:** full source tree (`Sources/FobKit`, `Sources/fob`, `Sources/FobApp`), build
 and release scripts (`Scripts/`, `.github/workflows/release.yml`, `Casks/fob.rb`).
-**Reviewer:** security audit for open-source release.
+**Reviewer:** internal audit for open-source release (2026-07-10 / -13); an **independent
+second audit** (ChatGPT / a GPT-5-class model) on 2026-07-27.
 **Date:** 2026-07-10; **re-audited 2026-07-13** for the features shipped in v0.7.0–v0.9.0
 (server migration, git-host migration, gitconfig-aware signing) — see
-["Re-audit 2026-07-13"](#re-audit-2026-07-13--migration-git-host--signing) below.
-**Commit reviewed:** `baf048b` (original); re-audit at the v0.9.0 tree.
+["Re-audit 2026-07-13"](#re-audit-2026-07-13--migration-git-host--signing); and an
+**independent re-audit 2026-07-27** of v0.16.0 (findings CG-01…CG-04, all fixed) — see
+["Re-audit 2026-07-27"](#re-audit-2026-07-27--independent-audit-chatgpt) below.
+**Commit reviewed:** `baf048b` (original); re-audit at the v0.9.0 tree; `e3d87b0` (v0.16.0)
+for the 2026-07-27 pass.
 
 fob is a macOS ssh-agent that keeps SSH private keys in the Secure Enclave and gates
 every signature behind user presence (Touch ID / Apple Watch / password), with
