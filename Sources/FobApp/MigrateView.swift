@@ -26,13 +26,18 @@ struct MigrateView: View {
             } else {
                 Text("SERVERS IN ~/.ssh/config").font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary).tracking(0.6)
-                VStack(spacing: 0) {
-                    ForEach(Array(servers.enumerated()), id: \.element.id) { index, s in
-                        serverRow(s)
-                        if index < servers.count - 1 { Divider() }
+                // Bound + scroll the list so a long ~/.ssh/config doesn't push the rest of
+                // the page (signing line, Refresh) past the bottom of the window.
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(servers.enumerated()), id: \.element.id) { index, s in
+                            serverRow(s)
+                            if index < servers.count - 1 { Divider() }
+                        }
                     }
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
                 }
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                .frame(maxHeight: 360)
             }
 
             if let signing { signingLine(signing) }
