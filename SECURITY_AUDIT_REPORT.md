@@ -9,11 +9,12 @@ second audit** (ChatGPT / a GPT-5-class model) on 2026-07-27.
 **Date:** 2026-07-10; **re-audited 2026-07-13** for the features shipped in v0.7.0–v0.9.0
 (server migration, git-host migration, gitconfig-aware signing) — see
 ["Re-audit 2026-07-13"](#re-audit-2026-07-13--migration-git-host--signing); and an
-**independent re-audit 2026-07-27** of v0.16.0 (findings CG-01…CG-04, all fixed) — see
+**independent re-audit 2026-07-27** of v0.16.0 (findings CG-01…CG-04), with remediation
+verified across v0.16.1 and v0.16.2 — see
 ["Re-audit 2026-07-27"](#re-audit-2026-07-27--independent-audit-chatgpt) below.
 
 **Commit reviewed:** `baf048b` (original); re-audit at the v0.9.0 tree; `e3d87b0` (v0.16.0)
-for the 2026-07-27 pass.
+for the independent pass; `f358531` (v0.16.1) and v0.16.2 for remediation.
 
 fob is a macOS ssh-agent that keeps SSH private keys in the Secure Enclave and gates
 every signature behind user presence (Touch ID / Apple Watch / password), with
@@ -85,12 +86,12 @@ State this in the README. It is the single most important thing for users.
 | I-1 | Info | `session-bind` binding is not tied to the signed payload → replay limits pin guarantees | **Documented** |
 | I-2 | Info | Peer attribution is spoofable (acknowledged in code) | **By design** |
 | M-4 | Medium | "Open in Terminal" ran an unquoted shell command built from a `~/.ssh/config` alias → click-to-RCE | **Fixed** (2026-07-13, shell-quoted) |
-| L-7 | Low | Migrate/verify read host/user/alias from `~/.ssh/config` without the leading-`-` revalidation the CLI applies | **Documented** (same-UID) |
+| L-7 | Low | Migrate/verify read host/user/alias from `~/.ssh/config` without the leading-`-` revalidation the CLI applies | **Fixed** (as CG-03, PR #22) |
 | I-3 | Info | "Verify" success is read from the remote server's greeting text, not a crypto proof | **By design** (usability check) |
 | CG-01 | Medium | SSHSIG parsed loosely (magic + namespace only) → agent signed an unvalidated blob under a "git commit" label | **Fixed** (PR #22) |
 | CG-02 | Medium | Policy read-modify-write paths (pin/reuse/namespace/rotation) still failed **open** — extends M-3 | **Fixed** (PR #22) |
 | CG-03 | Low | `User`/`HostName` from `~/.ssh/config` not revalidated before `ssh` — same issue as L-7 | **Fixed** (PR #22) |
-| CG-04 | Low | First-use `accept-new` could pin a man-in-the-middle host key | **Fixed** (PR #22) |
+| CG-04 | Low | First-use `accept-new` could pin a man-in-the-middle host key | **Fixed** (git-host, PR #22; server-migration gap closed in v0.16.2) |
 
 > **Remediation (2026-07-10).** All medium and low code-level findings are fixed in
 > commit following this report; see the per-finding "Fix applied" notes below. A
@@ -478,9 +479,52 @@ pinned — a sharper framing of the `accept-new` behaviour noted in the 2026-07-
 review.
 
 **✅ Fix.** Verify uses `StrictHostKeyChecking=yes` when the host already has a `known_hosts`
-key (reject a changed key); only genuinely first-seen hosts use `accept-new`, and the Migrate
-UI then labels the connection as trust-on-first-use (not "verified") and shows the host key's
+key (reject a changed key); only genuinely first-seen hosts use `accept-new`, and the migration
+UI labels a first-use connection as trust-on-first-use (not "verified"), showing the host key's
 `SHA256:…` fingerprint to confirm out-of-band before pinning.
+
+**Two-step remediation (honest trail).** v0.16.1 landed this for the **git-host** flow but left a
+gap in the **server-migration** flow, caught by the independent re-audit below: the headless
+key-install step connects with `accept-new` and adds the first-seen key to `known_hosts` *before*
+the UI read first-use state (in `runVerify`), so a first-connection server was mis-observed as
+already known and the server `lockdownStep` skipped the warning. **v0.16.2 closes it:**
+`MigrateHostView.load()` now captures first-use state **once, up front, before fob makes any
+connection** (the later post-install re-reads are removed), and the shared `tofuNote` fingerprint
+warning is rendered by the server `lockdownStep`, not just the git-host flow. A first-connection
+(possibly MITM) host key can no longer be pinned without the out-of-band fingerprint prompt.
+
+### Re-audit 2026-07-27 — v0.16.1 remediation verification
+
+The v0.16.1 tree at commit `f35853149ee3ff2c706025a4d85a57fc1964b66a` was re-audited
+after the CG-01…CG-04 fixes. The review retraced all changed security-sensitive paths and
+looked for regressions in SSHSIG dispatch, policy mutation/rename, subprocess argument
+ordering, host-key trust, and key rotation.
+
+| Finding | Re-audit status | Verification |
+|---|---|---|
+| CG-01 | **Fixed** | Full SSHSIG signed-data structure is parsed; malformed magic-prefixed requests fail closed and cannot fall through to auth. |
+| CG-02 | **Fixed** | Mutations use a throwing loader; rename loads before moving and rolls the blob back on policy-save failure. |
+| CG-03 | **Fixed** | Parsed user/host tokens reject leading options and control/whitespace; `--` terminates SSH option parsing. |
+| CG-04 | **Fixed in v0.16.2** | Git-host TOFU was surfaced with a fingerprint in v0.16.1; the server-migration gap (the `accept-new` install populated `known_hosts` before the UI recorded first-use state) was closed in v0.16.2 — see CG-04 above. |
+
+No new critical, high, or medium-severity vulnerability was found. The one gap this re-audit
+surfaced — CG-04 in the server-migration flow — was low severity (standard SSH trust-on-first-use,
+made to look more durable by the subsequent pin) and has since been **closed in v0.16.2** by
+capturing first-use state before any connection and showing the fingerprint warning in the server
+lockdown step.
+
+The complete suite passed:
+
+```text
+swift test --disable-sandbox
+Executed 114 tests, with 0 failures
+```
+
+The added tests cover strict SSHSIG rejection, throwing policy mutations, rename rollback on
+policy-save failure, host-token validation, and fingerprint formatting. The v0.16.2 CG-04 closure
+is view-layer (capture-before-connect + rendering the shared fingerprint warning); its underlying
+`hostIsKnown`/`fingerprint` primitives are unit-tested, though there is no automated UI test across
+the full install → verify → pin sequence.
 
 ### Follow-ups (PR #24)
 
