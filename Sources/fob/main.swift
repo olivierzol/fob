@@ -421,7 +421,7 @@ do {
         let pubURL = sshDir.appendingPathComponent("fob_\(name).pub")
         let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)")
         try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
         let signer = try store.ensureSignWrapper()
         print("Enable Touch ID-gated git commit signing with fob key '\(name)'.")
         print("Public key exported to \(pubURL.path).")
@@ -524,7 +524,7 @@ do {
             let pubLine = SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(name)")
             let pubURL = sshDir.appendingPathComponent("fob_\(name).pub")
             try Data((pubLine + "\n").utf8).write(to: pubURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: pubURL.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pubURL.path)
             try? FileManager.default.removeItem(at: sshDir.appendingPathComponent("fob_\(temp).pub"))
             if let email = signingEmail, !email.isEmpty {
                 var text = signersText
