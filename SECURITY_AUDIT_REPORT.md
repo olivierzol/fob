@@ -2,6 +2,7 @@
 
 **Scope:** full source tree (`Sources/FobKit`, `Sources/fob`, `Sources/FobApp`), build
 and release scripts (`Scripts/`, `.github/workflows/release.yml`, `Casks/fob.rb`).
+
 **Reviewer:** internal audit for open-source release (2026-07-10 / -13); an **independent
 second audit** (ChatGPT / a GPT-5-class model) on 2026-07-27.
 **Date:** 2026-07-10; **re-audited 2026-07-13** for the features shipped in v0.7.0–v0.9.0
