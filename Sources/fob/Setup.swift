@@ -137,7 +137,7 @@ enum Setup {
         if hostKeys.isEmpty {
             print("Not in known_hosts yet — pin later with: fob pin \(alias) \(host)")
         } else {
-            var policy = store.policy(name: alias)
+            var policy = try store.loadPolicyForMutation(name: alias)
             policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
             try store.savePolicy(policy, name: alias)
             print("🔒 Pinned \(alias) to \(host) — undo with: fob unpin \(alias)")
@@ -378,7 +378,7 @@ enum Setup {
             print("Pin it later with: fob pin \(alias) \(host)")
             return
         }
-        var policy = store.policy(name: alias)
+        var policy = try store.loadPolicyForMutation(name: alias)
         policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
         try store.savePolicy(policy, name: alias)
         print("🔒 Key '\(alias)' pinned to \(host): the agent will refuse it for any other")

@@ -76,11 +76,26 @@ extension KeyStore {
         }
     }
 
-    /// Convenience for display contexts (CLI/UI): an unreadable policy shows as the
-    /// default. Signing decisions MUST use `policyStatus` so corruption fails closed.
-    public func policy(name: String) -> KeyPolicy {
+    /// Convenience for **display** contexts only (CLI/UI): an unreadable policy shows as
+    /// the default. Signing decisions MUST use `policyStatus`, and any read-modify-write
+    /// MUST use `loadPolicyForMutation`, so corruption fails closed instead of silently
+    /// rewriting the record without its pins.
+    public func displayPolicy(name: String) -> KeyPolicy {
         if case .present(let policy) = policyStatus(name: name) { return policy }
         return KeyPolicy()
+    }
+
+    /// Load a policy for a read-modify-write. `.absent` is the open default (there is
+    /// genuinely no record yet); `.unreadable` **throws** so a mutation can't overwrite a
+    /// corrupt/transiently-unreadable record with a partial policy built on the open
+    /// default (which would drop pins / a namespace restriction). Callers must surface the
+    /// error and leave the record untouched.
+    public func loadPolicyForMutation(name: String) throws -> KeyPolicy {
+        switch policyStatus(name: name) {
+        case .present(let policy): return policy
+        case .absent: return KeyPolicy()
+        case .unreadable: throw KeyStoreError.policyUnreadable(name)
+        }
     }
 
     public func savePolicy(_ policy: KeyPolicy, name: String) throws {

@@ -169,7 +169,7 @@ final class SecurityTests: XCTestCase {
         let policyURL = store.keysDirectory.appendingPathComponent("\(name).policy")
         try Data("this is not json".utf8).write(to: policyURL)
         assertPolicy(.unreadable, store.policyStatus(name: name))
-        XCTAssertTrue(store.policy(name: name).pinnedHostKeys.isEmpty, "display fallback is default")
+        XCTAssertTrue(store.displayPolicy(name: name).pinnedHostKeys.isEmpty, "display fallback is default")
     }
 
     // MARK: - Audit hash chain tamper-evidence
@@ -231,9 +231,9 @@ final class SecurityTests: XCTestCase {
         XCTAssertTrue(pub.contains("fob:rot2"))            // comment retargeted
         XCTAssertFalse(pub.contains("fob:rot\n"))          // old exact comment gone
         XCTAssertTrue(pub.contains("AAAABBB"))             // same blob preserved
-        XCTAssertEqual(store.policy(name: "rot2").reuseSeconds, 30)          // policy carried over
-        XCTAssertEqual(store.policy(name: "rot2").namespaceChoiceMade, true)
-        XCTAssertTrue(store.policy(name: "rot").isDefault)                   // old policy cleared
+        XCTAssertEqual(store.displayPolicy(name: "rot2").reuseSeconds, 30)          // policy carried over
+        XCTAssertEqual(store.displayPolicy(name: "rot2").namespaceChoiceMade, true)
+        XCTAssertTrue(store.displayPolicy(name: "rot").isDefault)                   // old policy cleared
 
         XCTAssertThrowsError(try store.rename(from: "absent", to: "x"))      // source missing
         try Data("x".utf8).write(to: dir.appendingPathComponent("occupied.key"))

@@ -168,7 +168,7 @@ final class AppState: ObservableObject {
         guard let store else { keys = []; return }
         let all = (try? store.all()) ?? []
         keys = all.map { key in
-            let policy = store.policy(name: key.name)
+            let policy = store.displayPolicy(name: key.name)
             // Prefer the alias matching the key name so a key pinned to a shared HostName
             // (github-ousson / github-feedly both → github.com) shows its own alias.
             let names = policy.pinnedHostKeys.map {
@@ -355,7 +355,7 @@ final class AppState: ObservableObject {
             return "“\(host)” isn't in ~/.ssh/known_hosts yet — connect once (ssh \(alias)) first, then pin."
         }
         do {
-            var policy = store.policy(name: alias)
+            var policy = try store.loadPolicyForMutation(name: alias)
             policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
             try store.savePolicy(policy, name: alias)
             refreshKeys()
@@ -951,7 +951,7 @@ final class AppState: ObservableObject {
         return SigningInfo(
             name: name, pubLine: pubLine, pubPath: pubURL.path,
             signerProgram: signer,
-            gitOnly: store.policy(name: name).allowedNamespaces == ["git"])
+            gitOnly: store.displayPolicy(name: name).allowedNamespaces == ["git"])
     }
 
     /// Restrict a key to git-commit signatures only (["git"]), or clear the restriction.
@@ -960,7 +960,7 @@ final class AppState: ObservableObject {
     /// auto-hardening it again; auto-harden passes `explicit: false`.
     func setGitSigningOnly(_ on: Bool, name: String, explicit: Bool = true) {
         run { store in
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.allowedNamespaces = on ? ["git"] : nil
             if explicit { policy.namespaceChoiceMade = true }
             try store.savePolicy(policy, name: name)
@@ -972,7 +972,9 @@ final class AppState: ObservableObject {
     /// made an explicit namespace choice. Returns the resulting git-only state for the toggle.
     func autoHardenSigningIfEligible(name: String) async -> Bool {
         guard let store else { return false }
-        let policy = store.policy(name: name)
+        // Fail closed: if the policy is unreadable, don't auto-harden (which would write a
+        // fresh policy built on the open default and drop any pins).
+        guard let policy = try? store.loadPolicyForMutation(name: name) else { return false }
         let signingOnly = await keyUsage(name: name).authHosts.isEmpty
         if policy.shouldAutoHardenSigning(isSigningOnly: signingOnly) {
             setGitSigningOnly(true, name: name, explicit: false)
@@ -1117,7 +1119,7 @@ final class AppState: ObservableObject {
         // carried onto the new line. nil ⟹ auth-only key, so we don't touch allowed_signers.
         let signingEmail = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
         do {
-            copyPolicy(from: name, to: temp)               // new key inherits pin/reuse/namespaces
+            try copyPolicy(from: name, to: temp)           // new key inherits pin/reuse/namespaces
             try store.rename(from: name, to: retired)      // move old aside (recoverable)
             try store.rename(from: temp, to: name)         // new key takes the name
             try store.remove(name: retired)                // destroy the old enclave key
@@ -1148,9 +1150,12 @@ final class AppState: ObservableObject {
     }
 
     /// Copy a key's whole policy (pin/reuse/namespaces + choice marker) to another name.
-    private func copyPolicy(from: String, to: String) {
+    /// Throws (fail closed) if the source policy is unreadable, so rotation can't silently
+    /// hand the new key an open default and drop the old key's pins.
+    private func copyPolicy(from: String, to: String) throws {
         guard let store else { return }
-        try? store.savePolicy(store.policy(name: from), name: to)
+        let policy = try store.loadPolicyForMutation(name: from)
+        try store.savePolicy(policy, name: to)
     }
 
     /// Append an entry to ~/.ssh/allowed_signers (idempotent) so signed commits verify locally.
@@ -1207,7 +1212,7 @@ final class AppState: ObservableObject {
 
     func unpin(name: String) {
         run { store in
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.pinnedHostKeys = []
             try store.savePolicy(policy, name: name)
         }
@@ -1269,7 +1274,7 @@ final class AppState: ObservableObject {
                     + "must be known first. Connect to it once — e.g. `ssh \(host)` "
                     + "and accept the prompt — or run `fob setup \(host)`. Then pin again.")
             }
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.pinnedHostKeys.append(contentsOf: hostKeys.filter { !policy.pinnedHostKeys.contains($0) })
             try store.savePolicy(policy, name: name)
         }
@@ -1277,7 +1282,7 @@ final class AppState: ObservableObject {
 
     func setReuse(name: String, seconds: Int) {
         run { store in
-            var policy = store.policy(name: name)
+            var policy = try store.loadPolicyForMutation(name: name)
             policy.reuseSeconds = seconds > 0 ? Double(min(seconds, 300)) : nil
             try store.savePolicy(policy, name: name)
         }
