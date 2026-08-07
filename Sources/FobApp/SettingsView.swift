@@ -6,6 +6,11 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @State private var checking = false
+    @State private var copiedList = false
+
+    /// The command to list fob's keys via ssh-add (fob keys live in fob's own agent, so a
+    /// plain `ssh-add -l` — which talks to the system agent — won't show them).
+    private var listKeysCommand: String { "SSH_AUTH_SOCK=\(state.socketPath) ssh-add -l" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -62,6 +67,22 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 Text("Point ssh at this in `~/.ssh/config` with `IdentityAgent`.")
                     .font(.caption).foregroundStyle(.tertiary)
+
+                Text("Your keys live in fob's **own** agent — a plain `ssh-add -l` talks to the system agent and won't list them (that's expected, not a lost key). List fob's keys with:")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+                HStack(spacing: 8) {
+                    Text(listKeysCommand)
+                        .font(.system(.caption2, design: .monospaced)).textSelection(.enabled)
+                        .padding(6)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(0.12)))
+                    Button(copiedList ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(listKeysCommand, forType: .string)
+                        copiedList = true
+                    }.font(.caption)
+                }
             }
 
             Spacer(minLength: 0)
