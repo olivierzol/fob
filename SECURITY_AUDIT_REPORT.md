@@ -1,7 +1,7 @@
 # fob — Security Audit Report
 
 **Scope:** full source tree (`Sources/FobKit`, `Sources/fob`, `Sources/FobApp`), build
-and release scripts (`Scripts/`, `.github/workflows/release.yml`, `Casks/fob.rb`).
+and release scripts (`Scripts/build-app.sh`, `Scripts/release.sh`, `Casks/fob.rb`).
 
 **Reviewer:** internal audit for open-source release (2026-07-10 / -13); an **independent
 second audit** (ChatGPT / a GPT-5-class model) on 2026-07-27.
@@ -330,9 +330,11 @@ code comments already state. Do not build any policy on it (fob doesn't — good
 - **Pin refusal happens before the Touch ID prompt** (`Agent.swift:230-240`), so a
   blocked request never costs a touch and can't be used to fatigue the user into
   approving.
-- **Secrets hygiene** for release: `.p8`/`.p12`/`.env*` are git-ignored, and CI decodes
-  the cert to a temp file it deletes; local signing is documented to use a keychain
-  profile so no secret need touch disk.
+- **Secrets hygiene** for release: `.p8`/`.p12`/`.env*` are git-ignored. Releases are cut
+  **locally, by hand** (`Scripts/release.sh` — there is no CI release path): notary
+  credentials are read from a saved keychain profile and never touch the repo, and
+  `notarize.zip` is removed on any exit. The trust anchor is the maintainer's machine +
+  a manual tap-sha bump — standard for a solo project; see `docs/RELEASING.md`.
 
 ---
 
