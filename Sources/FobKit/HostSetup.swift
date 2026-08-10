@@ -326,19 +326,22 @@ public enum HostSetup {
         return gitProvider(forHost: hostName) != .other
     }
 
-    /// Deep link to the provider's "add SSH key" page (nil for unknown self-hosted).
-    /// Normalizes ssh aliases (ssh.github.com, gist.github.com) to the public web host,
-    /// while leaving an enterprise host (github.mycorp.com) as-is.
+    /// Deep link to a provider's "add SSH key" page — **only for the known public origins**
+    /// (exact host or a true subdomain like `ssh.github.com`), and the URL authority is always
+    /// the hardcoded apex, never the caller-supplied host. This closes a phishing vector
+    /// (CWE-601): a look-alike such as `github.com@evil.example` (where `github.com@` is
+    /// *userinfo* and the real origin is `evil.example`) or `github.com.evil.example` would
+    /// otherwise be classified as GitHub by substring and interpolated into the URL authority.
+    /// Non-canonical hosts (enterprise/self-hosted, or look-alikes) return nil — the flow still
+    /// shows the public key to copy; the user navigates to their host manually.
     public static func sshKeySettingsURL(forHost host: String) -> URL? {
         let h = host.lowercased()
-        func web(_ known: String) -> String { (h == known || h.hasSuffix(".\(known)")) ? known : host }
-        switch gitProvider(forHost: host) {
-        case .github:    return URL(string: "https://\(web("github.com"))/settings/ssh/new")
-        case .gitlab:    return URL(string: "https://\(web("gitlab.com"))/-/user_settings/ssh_keys")
-        case .bitbucket: return URL(string: "https://bitbucket.org/account/settings/ssh-keys/")
-        case .codeberg:  return URL(string: "https://\(web("codeberg.org"))/user/settings/keys")
-        case .other:     return nil
-        }
+        func isCanonical(_ apex: String) -> Bool { h == apex || h.hasSuffix(".\(apex)") }
+        if isCanonical("github.com")    { return URL(string: "https://github.com/settings/ssh/new") }
+        if isCanonical("gitlab.com")    { return URL(string: "https://gitlab.com/-/user_settings/ssh_keys") }
+        if isCanonical("bitbucket.org") { return URL(string: "https://bitbucket.org/account/settings/ssh-keys/") }
+        if isCanonical("codeberg.org")  { return URL(string: "https://codeberg.org/user/settings/keys") }
+        return nil
     }
 
     /// Parse an `ssh -T` greeting. `ssh -T git@github.com` exits NON-zero even on success,

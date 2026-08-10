@@ -108,6 +108,22 @@ final class HostSetupTests: XCTestCase {
         XCTAssertEqual(p?.usesFobAgent, true)
     }
 
+    func testSshKeySettingsURLCanonicalOnly() {
+        // Canonical origins (exact or true subdomain) → link to the hardcoded apex.
+        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "github.com")?.absoluteString,
+                       "https://github.com/settings/ssh/new")
+        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "ssh.github.com")?.absoluteString,
+                       "https://github.com/settings/ssh/new")
+        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "gitlab.com")?.absoluteString,
+                       "https://gitlab.com/-/user_settings/ssh_keys")
+        // Phishing look-alikes → nil (userinfo bypass and suffixed impostor).
+        XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "github.com@evil.example"))
+        XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "github.com.evil.example"))
+        // Enterprise / self-hosted → nil (no unreliable path guess, no branded link).
+        XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "github.mycorp.com"))
+        XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "gitea.mycorp.com"))
+    }
+
     func testValidHostToken() {
         XCTAssertTrue(HostSetup.isValidHostToken("example.com"))
         XCTAssertTrue(HostSetup.isValidHostToken("10.0.0.1"))
