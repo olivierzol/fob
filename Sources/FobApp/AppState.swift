@@ -887,7 +887,16 @@ final class AppState: ObservableObject {
 
     /// Run a subprocess off the main actor, feeding `stdin` if given, capturing merged
     /// stdout+stderr. `/usr/bin/ssh` bounds itself via BatchMode + ConnectTimeout.
-    private func runProcess(_ launchPath: String, _ args: [String], stdin: String? = nil) async -> (status: Int32, output: String) {
+    /// Run a subprocess and capture its (merged) output. Output that flows from a remote
+    /// `ssh` connection is attacker-influenced, so the read is **bounded** two ways: a byte
+    /// cap (`maxOutputBytes`) and an overall wall-clock `deadline`. Either one trips
+    /// `terminate()`, so a malicious/compromised selected host can neither grow memory
+    /// without bound nor hold the channel open forever and wedge the operation
+    /// (`ConnectTimeout` only bounds connection *setup*, not post-connect output). The
+    /// captured text is only used for greeting parsing / error display, so truncation is fine.
+    private func runProcess(_ launchPath: String, _ args: [String], stdin: String? = nil,
+                            maxOutputBytes: Int = 1 << 20, deadline: TimeInterval = 20)
+        async -> (status: Int32, output: String) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -900,16 +909,33 @@ final class AppState: ObservableObject {
                 if stdin != nil { let p = Pipe(); process.standardInput = p; inPipe = p }
                 do {
                     try process.run()
-                    if let stdin, let inPipe {
-                        inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-                        try? inPipe.fileHandleForWriting.close()
-                    }
-                    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
                 } catch {
                     continuation.resume(returning: (-1, error.localizedDescription))
+                    return
                 }
+                if let stdin, let inPipe {
+                    inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+                    try? inPipe.fileHandleForWriting.close()
+                }
+                // Overall deadline: terminating the process closes the pipe's write end, which
+                // unblocks the read below (→ EOF), so a host that never closes stdout can't hang us.
+                let timer = DispatchSource.makeTimerSource(queue: .global())
+                timer.schedule(deadline: .now() + deadline)
+                timer.setEventHandler { process.terminate() }
+                timer.resume()
+                // Bounded read: accumulate up to the cap, then terminate + stop so unbounded
+                // output can't exhaust memory. `availableData` returns empty at EOF.
+                let handle = outPipe.fileHandleForReading
+                var data = Data()
+                while data.count < maxOutputBytes {
+                    let chunk = handle.availableData
+                    if chunk.isEmpty { break } // EOF (or the process was terminated)
+                    data.append(chunk.prefix(maxOutputBytes - data.count))
+                }
+                if data.count >= maxOutputBytes { process.terminate() }
+                process.waitUntilExit()
+                timer.cancel()
+                continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
             }
         }
     }
