@@ -58,7 +58,6 @@ struct ContentView: View {
 
     @State private var openMenuKey: String?
     @State private var menuUsage: AppState.KeyUsage?
-    @State private var updateCopied = false
 
     private var t: Theme { Theme.current(scheme) }
     private let width: CGFloat = 360
@@ -133,12 +132,9 @@ struct ContentView: View {
             Spacer()
             Button("Notes") { if let u = state.updateAvailable { NSWorkspace.shared.open(u.url) } }
                 .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
-            Button(updateCopied ? "Copied" : "Copy `brew upgrade`") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString("brew upgrade --cask fob", forType: .string)
-                updateCopied = true
-            }
-            .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
+            Button("Update") { state.updateViaHomebrew() }
+                .buttonStyle(.borderedProminent).controlSize(.small).font(.system(size: 11, weight: .semibold))
+                .help("Runs `brew upgrade --cask fob` in Terminal, then reopens fob")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(Theme.accent.opacity(0.08))
