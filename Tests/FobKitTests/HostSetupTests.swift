@@ -124,6 +124,26 @@ final class HostSetupTests: XCTestCase {
         XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "gitea.mycorp.com"))
     }
 
+    func testHostLineSiblings() {
+        let cfg = """
+        Host a b c
+          HostName x.example
+        Host solo
+          HostName y.example
+        Host wild *.internal
+          HostName z.example
+        """
+        // A shared line → the other literal tokens.
+        XCTAssertEqual(Set(HostSetup.hostLineSiblings(ofAlias: "a", in: cfg)), ["b", "c"])
+        XCTAssertEqual(Set(HostSetup.hostLineSiblings(ofAlias: "c", in: cfg)), ["a", "b"])
+        // A lone alias → no siblings.
+        XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "solo", in: cfg), [])
+        // Wildcard tokens are ignored (never touched), so a literal beside one has no sibling.
+        XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "wild", in: cfg), [])
+        // Unknown alias → empty.
+        XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "nope", in: cfg), [])
+    }
+
     func testValidHostToken() {
         XCTAssertTrue(HostSetup.isValidHostToken("example.com"))
         XCTAssertTrue(HostSetup.isValidHostToken("10.0.0.1"))

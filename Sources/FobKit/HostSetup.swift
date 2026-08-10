@@ -132,6 +132,21 @@ public enum HostSetup {
         return out
     }
 
+    /// Other literal alias tokens that share `alias`'s `Host` line — e.g. for `Host a b`,
+    /// the siblings of `a` are `["b"]`. The migration/retirement transform edits the whole
+    /// block for any matching token, so it would rewrite every sibling's auth too; the flows
+    /// refuse when this is non-empty (CWE-706). Wildcard/`!` tokens are ignored (never touched).
+    public static func hostLineSiblings(ofAlias alias: String, in config: String) -> [String] {
+        for raw in config.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.lowercased().hasPrefix("host ") else { continue }
+            let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).dropFirst().map(String.init)
+                .filter { !$0.contains("*") && !$0.contains("?") && !$0.hasPrefix("!") }
+            if tokens.contains(alias) { return tokens.filter { $0 != alias } }
+        }
+        return []
+    }
+
     /// True if an `IdentityFile`/`IdentityAgent` value belongs to fob.
     private static func isFobIdentity(_ value: String) -> Bool {
         value.contains("/fob_") || value.contains("/.fob/")

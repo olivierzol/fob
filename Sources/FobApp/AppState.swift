@@ -532,6 +532,17 @@ final class AppState: ObservableObject {
 
     /// The `old → new` ~/.ssh/config text for the diff preview, or nil if there's no
     /// literal block (or it's already fully migrated).
+    /// Refuse to migrate/retire an alias that shares a `Host a b` line: the config transform
+    /// edits the whole block, so it would silently rewrite every sibling's SSH auth (CWE-706).
+    /// Returns a user-facing message naming the siblings, or nil when the alias is on its own line.
+    private func sharedHostLineRefusal(alias: String, in config: String) -> String? {
+        let siblings = HostSetup.hostLineSiblings(ofAlias: alias, in: config)
+        guard !siblings.isEmpty else { return nil }
+        let names = siblings.map { "“\($0)”" }.joined(separator: ", ")
+        return "“\(alias)” shares a Host line with \(names). Changing it would rewrite their SSH "
+            + "auth too. Put “\(alias)” on its own `Host` line in ~/.ssh/config first, then retry."
+    }
+
     func configDiff(alias: String) -> (old: String, new: String)? {
         guard let store else { return nil }
         let old = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
@@ -547,6 +558,7 @@ final class AppState: ObservableObject {
     func applyConfigMigration(alias: String) -> ConfigWriteResult {
         guard let store else { return .error("Key store unavailable.") }
         let old = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        if let err = sharedHostLineRefusal(alias: alias, in: old) { return .error(err) }
         guard let new = HostSetup.migratedConfig(old, alias: alias,
                                                  fobPubPath: fobPubURL(alias).path,
                                                  socketPath: store.socketPath) else {
@@ -711,6 +723,7 @@ final class AppState: ObservableObject {
     func retireOldKey(alias: String) -> ConfigWriteResult {
         guard let store else { return .error("Key store unavailable.") }
         let old = (try? String(contentsOf: sshConfigURL, encoding: .utf8)) ?? ""
+        if let err = sharedHostLineRefusal(alias: alias, in: old) { return .error(err) }
         guard let new = HostSetup.migratedConfig(old, alias: alias,
                                                  fobPubPath: fobPubURL(alias).path,
                                                  socketPath: store.socketPath, retireOld: true) else {

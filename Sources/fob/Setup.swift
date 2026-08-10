@@ -25,6 +25,10 @@ enum Setup {
         guard let parsed = HostSetup.parseHostBlock(alias: alias, in: configText) else {
             throw AdoptError.notConfigured(alias)
         }
+        // Refuse a shared `Host a b` line: the transform edits the whole block, so adopting
+        // or retiring one alias would rewrite its siblings' SSH auth too (CWE-706).
+        let siblings = HostSetup.hostLineSiblings(ofAlias: alias, in: configText)
+        guard siblings.isEmpty else { throw AdoptError.sharedHostLine(alias, siblings) }
         let host = parsed.hostName ?? alias
         let user = parsed.user ?? NSUserName()
         let port = parsed.port ?? 22
@@ -497,6 +501,7 @@ enum SetupError: LocalizedError {
 enum AdoptError: LocalizedError {
     case usage
     case notConfigured(String)
+    case sharedHostLine(String, [String])
 
     var errorDescription: String? {
         switch self {
@@ -504,6 +509,9 @@ enum AdoptError: LocalizedError {
             return "usage: fob adopt <alias> [--dry-run] [--retire] [--require-biometry]"
         case .notConfigured(let alias):
             return "no `Host \(alias)` entry in ~/.ssh/config — for a brand-new host use: fob setup \(alias)"
+        case .sharedHostLine(let alias, let siblings):
+            return "'\(alias)' shares a Host line with \(siblings.joined(separator: ", ")) — adopting it "
+                + "would rewrite their SSH auth too. Put '\(alias)' on its own `Host` line first, then retry."
         }
     }
 }
