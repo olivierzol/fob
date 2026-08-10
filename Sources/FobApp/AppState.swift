@@ -761,6 +761,14 @@ final class AppState: ObservableObject {
         let skipExact: Set<String> = ["config", "known_hosts", "authorized_keys", "agent.sock"]
         let entries = (try? fm.contentsOfDirectory(atPath: sshDir.path)) ?? []
         for name in entries.sorted() {
+            // fob's own exported pubs are used as IdentityFile — flag group/other-readable ones
+            // (checked before the .pub skip below, which is for on-disk private keys).
+            if name.hasPrefix("fob_"), name.hasSuffix(".pub"),
+               let mode = (try? fm.attributesOfItem(atPath: sshDir.appendingPathComponent(name).path))?[.posixPermissions] as? Int,
+               let f = SSHCheckup.fobPubPermissionFinding(
+                   fileName: name, path: sshDir.appendingPathComponent(name).path, mode: mode) {
+                findings.append(f)
+            }
             if name.hasSuffix(".pub") || name.hasPrefix("config.") || name.hasPrefix("known_hosts")
                 || skipExact.contains(name) || name.hasPrefix(".") { continue }
             let url = sshDir.appendingPathComponent(name)

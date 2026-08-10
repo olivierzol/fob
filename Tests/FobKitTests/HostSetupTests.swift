@@ -138,10 +138,22 @@ final class HostSetupTests: XCTestCase {
         XCTAssertEqual(Set(HostSetup.hostLineSiblings(ofAlias: "c", in: cfg)), ["a", "b"])
         // A lone alias → no siblings.
         XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "solo", in: cfg), [])
-        // Wildcard tokens are ignored (never touched), so a literal beside one has no sibling.
-        XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "wild", in: cfg), [])
+        // A wildcard sharing the line IS a sibling — migrating "wild" would push fob directives
+        // onto everything *.internal matches, so it must be refused (regression guard).
+        XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "wild", in: cfg), ["*.internal"])
         // Unknown alias → empty.
         XCTAssertEqual(HostSetup.hostLineSiblings(ofAlias: "nope", in: cfg), [])
+    }
+
+    func testFobPubPermissionFinding() {
+        // Group/other-readable → a low finding with a chmod-600 fix.
+        let f = SSHCheckup.fobPubPermissionFinding(fileName: "fob_x.pub", path: "/x/fob_x.pub", mode: 0o644)
+        XCTAssertNotNil(f)
+        XCTAssertEqual(f?.severity, .low)
+        XCTAssertEqual(f?.fix, .command("chmod 600 /x/fob_x.pub"))
+        XCTAssertNotNil(SSHCheckup.fobPubPermissionFinding(fileName: "fob_x.pub", path: "/x", mode: 0o640))
+        // Already owner-only → no finding.
+        XCTAssertNil(SSHCheckup.fobPubPermissionFinding(fileName: "fob_x.pub", path: "/x", mode: 0o600))
     }
 
     func testValidHostToken() {
