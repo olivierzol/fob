@@ -144,6 +144,15 @@ func sshCheckupFindings(fobKeyBlobs: Set<String>, fobKeyNames: Set<String>) -> [
 
     let skip: Set<String> = ["config", "known_hosts", "authorized_keys", "agent.sock"]
     for name in ((try? fm.contentsOfDirectory(atPath: sshDir.path)) ?? []).sorted() {
+        // fob's own exported pubs are used as IdentityFile — flag group/other-readable ones
+        // (before the .pub skip below, which is for on-disk private keys).
+        if name.hasPrefix("fob_"), name.hasSuffix(".pub") {
+            let p = sshDir.appendingPathComponent(name).path
+            if let mode = (try? fm.attributesOfItem(atPath: p))?[.posixPermissions] as? Int,
+               let f = SSHCheckup.fobPubPermissionFinding(fileName: name, path: p, mode: mode) {
+                findings.append(f)
+            }
+        }
         if name.hasSuffix(".pub") || name.hasPrefix("config.") || name.hasPrefix("known_hosts")
             || skip.contains(name) || name.hasPrefix(".") { continue }
         let path = sshDir.appendingPathComponent(name).path

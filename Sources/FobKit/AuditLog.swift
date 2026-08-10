@@ -5,8 +5,13 @@ import Foundation
 ///
 /// One JSON object per line in ~/.fob/audit.log. Each entry carries
 /// `prev`: the SHA-256 of the previous line's exact bytes ("genesis" for the
-/// first). Editing or deleting any line breaks the chain for every line after
-/// it, which `fob audit --verify` detects.
+/// first). Editing, reordering, inserting, or deleting an *interior* line breaks
+/// the chain for every line after it, which `fob audit --verify` detects.
+///
+/// It is tamper-**evident**, not tamper-**proof** (there is no external anchor of
+/// the head): a same-uid attacker can still truncate the tail or delete the whole
+/// file and produce a self-consistent chain that `--verify` accepts. That's inherent
+/// without hardware-sealing each line — see the threat model in SECURITY_AUDIT_REPORT.md.
 public final class AuditLog {
     public struct Entry: Codable {
         public let ts: String
@@ -40,8 +45,16 @@ public final class AuditLog {
             guard let line = try? encoder.encode(entry) else { return }
             guard let handle = fileHandleForAppend() else { return }
             defer { try? handle.close() }
-            try? handle.write(contentsOf: line + Data("\n".utf8))
-            lastHash = Self.hash(line)
+            // Only advance the chain head if the append actually landed. A swallowed partial/
+            // failed write that still advanced `lastHash` would make the *next* entry's `prev`
+            // point at a line that never hit disk — which `--verify` would then misreport as
+            // tampering. On failure, leave the head where it was and drop this event.
+            do {
+                try handle.write(contentsOf: line + Data("\n".utf8))
+                lastHash = Self.hash(line)
+            } catch {
+                FileHandle.standardError.write(Data("fob: audit log append failed: \(error.localizedDescription)\n".utf8))
+            }
         }
     }
 

@@ -337,6 +337,19 @@ public enum SSHCheckup {
     /// these, and it means another local account could read the key.
     public static func isPrivateKeyPermissive(mode: Int) -> Bool { mode & 0o077 != 0 }
 
+    /// A fob-exported public key (`~/.ssh/fob_<name>.pub`) that is group/other-readable.
+    /// fob points ssh at it via `IdentityFile`; while the agent is running this is harmless,
+    /// but if the agent is momentarily unavailable ssh falls back to loading it as a private
+    /// key and OpenSSH refuses a 0644 file — "UNPROTECTED PRIVATE KEY FILE … will be ignored"
+    /// — dropping to a password. 0600 makes that a clean skip. Returns nil when already 0600.
+    public static func fobPubPermissionFinding(fileName: String, path: String, mode: Int) -> Finding? {
+        guard isPrivateKeyPermissive(mode: mode) else { return nil }
+        return Finding(severity: .low, category: "Key",
+            title: "“\(fileName)” is readable by other accounts",
+            detail: "fob points ssh at this public key with `IdentityFile`. Left group/other-readable (mode \(String(mode, radix: 8))), it works while the fob agent is running — but if the agent is briefly unavailable, ssh falls back to loading it as a private key and OpenSSH refuses it (“UNPROTECTED PRIVATE KEY FILE”), dropping to a password. Set it to 0600.",
+            fix: .command("chmod 600 \(path)"))
+    }
+
     // MARK: - Git identity footgun (multi-account default leak)
 
     /// With multiple `includeIf` git identities but `user.useConfigOnly` unset, any repo

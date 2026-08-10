@@ -287,15 +287,15 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(HostSetup.gitProvider(forHost: "ssh.github.com"), .github)
         XCTAssertEqual(HostSetup.gitProvider(forHost: "gitlab.com"), .gitlab)
         XCTAssertEqual(HostSetup.gitProvider(forHost: "server.example.com"), .other)
-        // ssh alias normalizes to the public web host…
+        // ssh alias (true subdomain) normalizes to the public web host…
         XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "ssh.github.com")?.absoluteString,
                        "https://github.com/settings/ssh/new")
-        // …enterprise keeps its own host…
-        XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "github.mycorp.com")?.absoluteString,
-                       "https://github.mycorp.com/settings/ssh/new")
         XCTAssertEqual(HostSetup.sshKeySettingsURL(forHost: "gitlab.com")?.absoluteString,
                        "https://gitlab.com/-/user_settings/ssh_keys")
-        // …unknown self-hosted has no reliable URL.
+        // …but enterprise / self-hosted hosts get NO branded link now (CSF-2): we can't
+        // distinguish a real github.mycorp.com from an impostor github.com.evil.example by
+        // string, so a link is produced only for canonical public origins.
+        XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "github.mycorp.com"))
         XCTAssertNil(HostSetup.sshKeySettingsURL(forHost: "git.example.com"))
     }
 
