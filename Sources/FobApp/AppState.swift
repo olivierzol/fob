@@ -718,6 +718,20 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// One-click update: open Terminal and run the Homebrew upgrade, then reopen fob. fob is
+    /// distributed as a cask, so brew stays the source of truth — this just saves the user the
+    /// copy-paste. The command is a constant (no injection surface); Terminal owns the process,
+    /// so it survives the cask quitting/replacing fob mid-upgrade, and `&& open -a fob` relaunches
+    /// only on success. A non-Homebrew (source) install simply sees brew's "not installed" error.
+    func updateViaHomebrew() {
+        let command = "brew upgrade --cask fob && open -a fob"
+        let script = "tell application \"Terminal\"\nactivate\ndo script \"\(command)\"\nend tell"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        try? process.run()
+    }
+
     /// Comment out the old `IdentityFile` in the block (the explicit, optional retire step),
     /// after the user has confirmed fob works. Returns the backup filename or an error.
     func retireOldKey(alias: String) -> ConfigWriteResult {
