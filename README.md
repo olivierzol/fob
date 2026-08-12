@@ -21,14 +21,17 @@
 
 The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, a tamper-evident audit log, and a read-only checkup of your SSH setup — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
 
+That matters most for the keys you use every day: **your GitHub SSH key can push code as you, and your signing key makes commits show *Verified*.** fob keeps both in the Secure Enclave — non-exportable, one touch per use — so there's no key file for a backup, a stolen laptop, or malware running as you to walk off with. It works the same for GitLab, Bitbucket, Codeberg, and your own servers.
+
 ## Features
 
 - 🔐 **Keys in the Secure Enclave** — non-exportable; nothing usable on disk or in memory
 - 👆 **One touch per use** — Touch ID, Apple Watch, or password
+- 🐙 **GitHub, GitLab & co.** — `git push`/`pull` authenticates from the enclave; no key file that could push as you
+- ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
 - 🎯 **Destination-aware prompts** — see *where* you're connecting, cryptographically verified
 - 📌 **Per-host pinning** — a key refuses every host but the one it's bound to
 - ⏱️ **Opt-in touch reuse** — one touch covers a `git` / `rsync` burst
-- ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
 - 🚚 **Safe migration** — moves an existing SSH host to fob *alongside* the old key; no cutover, no lockout
 - 🩺 **SSH checkup** — a read-only hygiene report of your `~/.ssh`: unencrypted or unused keys, risky config, and identity/signing footguns
 - 📜 **Tamper-evident audit log** — hash-chained record of every decision
@@ -59,6 +62,22 @@ Then open **fob** from the menu bar and turn on **Launch at login**.
 Ad-hoc-signed by default (fine for local use). Set `FOB_SIGN_IDENTITY` for a real signature; see [`docs/RELEASING.md`](docs/RELEASING.md) for notarized / Homebrew builds. CLI only: `swift build -c release`.
 
 ## Quick start
+
+### GitHub (or GitLab, Bitbucket, Codeberg)
+
+```sh
+fob setup github git@github.com
+```
+
+Creates the Secure Enclave key, writes the `~/.ssh/config` entry, and prints the public key plus the link to add it — paste it on GitHub as an **Authentication Key**. Then:
+
+```sh
+ssh -T github        # Touch ID → "Hi <you>! You've successfully authenticated"
+```
+
+Point a repo at it (`git remote set-url origin git@github:you/repo.git`) and every `git push` takes one touch. For *Verified* commits, add the same key again as a **Signing Key** and run `fob sign-setup github`.
+
+### A server
 
 One command onboards a host end to end — creates the key, installs it with `ssh-copy-id`, adds a `~/.ssh/config` entry, verifies with Touch ID, and pins the key:
 
