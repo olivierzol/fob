@@ -17,16 +17,21 @@
 
 <img src="docs/demo.gif" alt="A git push gated by fob: the Touch ID prompt names the destination — “fob is trying to connect to github.com” — one touch and it’s authenticated." width="760">
 
+<sub>A `git push`, gated by Touch ID. `ssh myserver` gets the same prompt, naming that host.</sub>
+
 </div>
 
 The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, a tamper-evident audit log, and a read-only checkup of your SSH setup — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
 
-That matters most for the keys you use every day: **your GitHub SSH key can push code as you, and your signing key makes commits show *Verified*.** fob keeps both in the Secure Enclave — non-exportable, one touch per use — so there's no key file for a backup, a stolen laptop, or malware running as you to walk off with. It works the same for GitLab, Bitbucket, Codeberg, and your own servers.
+That matters most for the keys you reach for every day — **the one that gets you into your servers, and the one that talks to GitHub**. An SSH key on disk is a file: whoever copies it (a backup, a stolen laptop, malware running as you) can log into those machines, **push code as you**, or forge commits that show *Verified*. fob keeps all of them in the Secure Enclave — non-exportable, one touch per use — so there's no file to copy in the first place.
+
+It's the same mechanism either way: `ssh myserver` and `git push` both get a prompt naming the verified destination, the same pinning rules, and the same audit trail. GitLab, Bitbucket, Codeberg and any plain SSH host work exactly like GitHub.
 
 ## Features
 
 - 🔐 **Keys in the Secure Enclave** — non-exportable; nothing usable on disk or in memory
 - 👆 **One touch per use** — Touch ID, Apple Watch, or password
+- 🚪 **Your own servers** — `ssh` any host with one touch; the prompt names the verified destination
 - 🐙 **GitHub, GitLab & co.** — `git push`/`pull` authenticates from the enclave; no key file that could push as you
 - ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
 - 🎯 **Destination-aware prompts** — see *where* you're connecting, cryptographically verified
@@ -63,20 +68,6 @@ Ad-hoc-signed by default (fine for local use). Set `FOB_SIGN_IDENTITY` for a rea
 
 ## Quick start
 
-### GitHub (or GitLab, Bitbucket, Codeberg)
-
-```sh
-fob setup github git@github.com
-```
-
-Creates the Secure Enclave key, writes the `~/.ssh/config` entry, and prints the public key plus the link to add it — paste it on GitHub as an **Authentication Key**. Then:
-
-```sh
-ssh -T github        # Touch ID → "Hi <you>! You've successfully authenticated"
-```
-
-Point a repo at it (`git remote set-url origin git@github:you/repo.git`) and every `git push` takes one touch. For *Verified* commits, add the same key again as a **Signing Key** and run `fob sign-setup github`.
-
 ### A server
 
 One command onboards a host end to end — creates the key, installs it with `ssh-copy-id`, adds a `~/.ssh/config` entry, verifies with Touch ID, and pins the key:
@@ -86,6 +77,22 @@ fob setup myserver you@host      # or just `fob setup` and answer the prompts
 ```
 
 Then `ssh myserver` prompts for Touch ID and connects. Prefer to run each step yourself? `fob setup --manual` prints the commands and changes nothing.
+
+### GitHub (or GitLab, Bitbucket, Codeberg)
+
+Same command — git hosts have no shell, so you add the key on the web instead of via `ssh-copy-id`:
+
+```sh
+fob setup github git@github.com
+```
+
+It creates the key, writes the `~/.ssh/config` entry, and prints the public key plus the link to add it — paste it on GitHub as an **Authentication Key**. Then:
+
+```sh
+ssh -T github        # Touch ID → "Hi <you>! You've successfully authenticated"
+```
+
+Point a repo at it (`git remote set-url origin git@github:you/repo.git`) and every `git push` takes one touch. For *Verified* commits, add the same key again as a **Signing Key** and run `fob sign-setup github`.
 
 <details>
 <summary><strong>Manual setup</strong> (without the <code>setup</code> helper)</summary>
