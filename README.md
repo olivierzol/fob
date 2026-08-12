@@ -17,18 +17,32 @@
 
 <img src="docs/demo.gif" alt="A git push gated by fob: the Touch ID prompt names the destination — “fob is trying to connect to github.com” — one touch and it’s authenticated." width="760">
 
+<sub>A `git push`, gated by Touch ID. `ssh myserver` gets the same prompt, naming that host.</sub>
+
 </div>
 
 The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, a tamper-evident audit log, and a read-only checkup of your SSH setup — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
+
+In practice that hardens the three things you do all day:
+
+- **`ssh` into your servers** — the box opens for your finger, not for a file someone could copy.
+- **`git push` / `pull` on GitHub** (GitLab, Bitbucket, Codeberg…) — nothing on disk could push code as you.
+- **Signing commits** — the signature that makes GitHub show *Verified* comes from the enclave, so it can't be lifted and used to forge your name.
+
+All three normally rest on the same thing: a private-key file in `~/.ssh`. Whoever copies it — a backup, a stolen laptop, malware running as you — gets your servers, your pushes, and your signature. With fob there's no file to copy, and each use costs one touch.
+
+It's the same mechanism either way: `ssh myserver` and `git push` both get a prompt naming the verified destination, the same pinning rules, and the same audit trail. GitLab, Bitbucket, Codeberg and any plain SSH host work exactly like GitHub.
 
 ## Features
 
 - 🔐 **Keys in the Secure Enclave** — non-exportable; nothing usable on disk or in memory
 - 👆 **One touch per use** — Touch ID, Apple Watch, or password
+- 🚪 **Your own servers** — `ssh` any host with one touch; the prompt names the verified destination
+- 🐙 **GitHub, GitLab & co.** — `git push`/`pull` authenticates from the enclave; no key file that could push as you
+- ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
 - 🎯 **Destination-aware prompts** — see *where* you're connecting, cryptographically verified
 - 📌 **Per-host pinning** — a key refuses every host but the one it's bound to
 - ⏱️ **Opt-in touch reuse** — one touch covers a `git` / `rsync` burst
-- ✍️ **Touch-ID commit signing** — sign git commits with a Secure Enclave key; GitHub/GitLab show *Verified*
 - 🚚 **Safe migration** — moves an existing SSH host to fob *alongside* the old key; no cutover, no lockout
 - 🩺 **SSH checkup** — a read-only hygiene report of your `~/.ssh`: unencrypted or unused keys, risky config, and identity/signing footguns
 - 📜 **Tamper-evident audit log** — hash-chained record of every decision
@@ -60,6 +74,8 @@ Ad-hoc-signed by default (fine for local use). Set `FOB_SIGN_IDENTITY` for a rea
 
 ## Quick start
 
+### A server
+
 One command onboards a host end to end — creates the key, installs it with `ssh-copy-id`, adds a `~/.ssh/config` entry, verifies with Touch ID, and pins the key:
 
 ```sh
@@ -67,6 +83,22 @@ fob setup myserver you@host      # or just `fob setup` and answer the prompts
 ```
 
 Then `ssh myserver` prompts for Touch ID and connects. Prefer to run each step yourself? `fob setup --manual` prints the commands and changes nothing.
+
+### GitHub (or GitLab, Bitbucket, Codeberg)
+
+Same command — git hosts have no shell, so you add the key on the web instead of via `ssh-copy-id`:
+
+```sh
+fob setup github git@github.com
+```
+
+It creates the key, writes the `~/.ssh/config` entry, and prints the public key plus the link to add it — paste it on GitHub as an **Authentication Key**. Then:
+
+```sh
+ssh -T github        # Touch ID → "Hi <you>! You've successfully authenticated"
+```
+
+Point a repo at it (`git remote set-url origin git@github:you/repo.git`) and every `git push` takes one touch. For *Verified* commits, add the same key again as a **Signing Key** and run `fob sign-setup github`.
 
 <details>
 <summary><strong>Manual setup</strong> (without the <code>setup</code> helper)</summary>
