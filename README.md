@@ -23,7 +23,13 @@
 
 The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, a tamper-evident audit log, and a read-only checkup of your SSH setup — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
 
-That matters most for the keys you reach for every day — **the one that gets you into your servers, and the one that talks to GitHub**. An SSH key on disk is a file: whoever copies it (a backup, a stolen laptop, malware running as you) can log into those machines, **push code as you**, or forge commits that show *Verified*. fob keeps all of them in the Secure Enclave — non-exportable, one touch per use — so there's no file to copy in the first place.
+In practice that hardens the three things you do all day:
+
+- **`ssh` into your servers** — the box opens for your finger, not for a file someone could copy.
+- **`git push` / `pull` on GitHub** (GitLab, Bitbucket, Codeberg…) — nothing on disk could push code as you.
+- **Signing commits** — the signature that makes GitHub show *Verified* comes from the enclave, so it can't be lifted and used to forge your name.
+
+All three normally rest on the same thing: a private-key file in `~/.ssh`. Whoever copies it — a backup, a stolen laptop, malware running as you — gets your servers, your pushes, and your signature. With fob there's no file to copy, and each use costs one touch.
 
 It's the same mechanism either way: `ssh myserver` and `git push` both get a prompt naming the verified destination, the same pinning rules, and the same audit trail. GitLab, Bitbucket, Codeberg and any plain SSH host work exactly like GitHub.
 
