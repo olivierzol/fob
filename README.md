@@ -13,6 +13,10 @@
 
 [**getfob.app**](https://getfob.app) — website &amp; install
 
+<br>
+
+<img src="docs/demo.gif" alt="A git push gated by fob: the Touch ID prompt names the destination — “fob is trying to connect to github.com” — one touch and it’s authenticated." width="760">
+
 </div>
 
 The private key is generated **inside the Secure Enclave and never leaves it** — no key file to steal, back up, or leak. What's on disk is an encrypted blob only your Mac's enclave can use, and every use needs Touch ID (or Apple Watch / password). On top of that, fob adds destination-aware prompts, per-host pinning, touch reuse, a tamper-evident audit log, and a read-only checkup of your SSH setup — as a menu-bar app plus a `fob` CLI, with zero third-party dependencies.
@@ -39,6 +43,12 @@ brew install --cask olivierzol/fob/fob
 ```
 
 Then open **fob** from the menu bar and turn on **Launch at login**.
+
+> **On a non-admin or managed Mac?** Homebrew installs to `/Applications` (needs admin). To install into your own home folder with no `sudo`, add `--appdir`:
+> ```sh
+> brew install --cask olivierzol/fob/fob --appdir=~/Applications
+> ```
+> Make it the default for future installs/upgrades with `export HOMEBREW_CASK_OPTS="--appdir=~/Applications"` in your shell profile.
 
 ### From source
 
