@@ -3,7 +3,7 @@ import Foundation
 
 /// Per-key signing policy, stored next to the key blob as <name>.policy (JSON).
 /// Absent file = default policy (no pinning, touch required every time).
-public struct KeyPolicy: Codable {
+public struct KeyPolicy: Codable, Equatable {
     /// Host-key blobs this key may sign for. Empty = any destination.
     /// Non-empty = the agent refuses unbound connections and any destination
     /// whose (verified) host key is not in this list.
