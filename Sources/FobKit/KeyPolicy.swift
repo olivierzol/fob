@@ -27,9 +27,18 @@ public struct KeyPolicy: Codable {
     /// key for non-optional properties even when they have a default).
     public var namespaceChoiceMade: Bool?
 
+    /// Whether this key was created Touch-ID-only (`.biometryCurrentSet`) rather than accepting any
+    /// user presence (`.userPresence`, which also allows Apple Watch / password). The enclave's
+    /// access control can't be read back from the key blob, so recording it here is the only way to
+    /// know afterwards — needed so migrating to a new Mac can recreate the key at the *same*
+    /// protection level instead of silently downgrading it. Optional: nil = created before this was
+    /// recorded (unknown), matching `namespaceChoiceMade`'s back-compat pattern.
+    public var requireBiometry: Bool?
+
     public var isDefault: Bool {
         pinnedHostKeys.isEmpty && (reuseSeconds ?? 0) <= 0
             && allowedNamespaces == nil && namespaceChoiceMade != true
+            && requireBiometry != true // else savePolicy would drop the record and lose the flag
     }
 
     /// Whether an SSHSIG signature for `namespace` is permitted by this policy.
@@ -46,11 +55,13 @@ public struct KeyPolicy: Codable {
     }
 
     public init(pinnedHostKeys: [Data] = [], reuseSeconds: Double? = nil,
-                allowedNamespaces: [String]? = nil, namespaceChoiceMade: Bool? = nil) {
+                allowedNamespaces: [String]? = nil, namespaceChoiceMade: Bool? = nil,
+                requireBiometry: Bool? = nil) {
         self.pinnedHostKeys = pinnedHostKeys
         self.reuseSeconds = reuseSeconds
         self.allowedNamespaces = allowedNamespaces
         self.namespaceChoiceMade = namespaceChoiceMade
+        self.requireBiometry = requireBiometry
     }
 }
 
@@ -96,6 +107,16 @@ extension KeyStore {
         case .absent: return KeyPolicy()
         case .unreadable: throw KeyStoreError.policyUnreadable(name)
         }
+    }
+
+    /// Carry one key's policy onto another (rotation), **keeping the destination's own protection
+    /// level**. The replacement key is created with a freshly chosen Touch-ID-only setting, so
+    /// copying the retired key's policy wholesale would clobber that choice with the old value.
+    /// Fails closed on either side being unreadable, like every other policy mutation.
+    public func carryPolicy(from: String, to: String) throws {
+        var policy = try loadPolicyForMutation(name: from)
+        policy.requireBiometry = try loadPolicyForMutation(name: to).requireBiometry
+        try savePolicy(policy, name: to)
     }
 
     public func savePolicy(_ policy: KeyPolicy, name: String) throws {

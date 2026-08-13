@@ -21,6 +21,49 @@ struct ThrowingPolicyStore: PolicyStore {
 
 final class PolicyStoreTests: XCTestCase {
 
+    // MARK: - requireBiometry (protection level)
+
+    /// A Touch-ID-only key must produce a *persisted* record: the enclave's access control can't be
+    /// read back from the blob, so if `isDefault` ignored this flag `savePolicy` would delete the
+    /// record and the setting would be lost (and a migration would silently downgrade the key).
+    func testRequireBiometryIsNotDefaultAndSurvivesSave() throws {
+        XCTAssertTrue(KeyPolicy().isDefault)
+        XCTAssertTrue(KeyPolicy(requireBiometry: false).isDefault, "user-presence is the default")
+        XCTAssertFalse(KeyPolicy(requireBiometry: true).isDefault)
+
+        let memory = InMemoryPolicyStore()
+        let store = KeyStore(directory: try makeTempKeysDir().deletingLastPathComponent(),
+                             policyStore: memory)
+        try store.savePolicy(KeyPolicy(requireBiometry: true), name: "k")
+        XCTAssertEqual(try store.loadPolicyForMutation(name: "k").requireBiometry, true)
+    }
+
+    /// Old `.policy` JSON predates the field, so it must still decode (nil = unknown).
+    func testRequireBiometryDecodesFromLegacyJSON() throws {
+        let legacy = Data(#"{"pinnedHostKeys":[],"reuseSeconds":30}"#.utf8)
+        let policy = try JSONDecoder().decode(KeyPolicy.self, from: legacy)
+        XCTAssertNil(policy.requireBiometry, "unknown, not false")
+        XCTAssertEqual(policy.reuseSeconds, 30)
+    }
+
+    /// Rotation carries the retired key's pins/reuse but must keep the *replacement's* protection
+    /// level — the user re-chooses it when creating the new key.
+    func testCarryPolicyKeepsDestinationProtectionLevel() throws {
+        let memory = InMemoryPolicyStore()
+        let store = KeyStore(directory: try makeTempKeysDir().deletingLastPathComponent(),
+                             policyStore: memory)
+        try store.savePolicy(KeyPolicy(pinnedHostKeys: [Data([9])], reuseSeconds: 30,
+                                       requireBiometry: true), name: "old")
+        try store.savePolicy(KeyPolicy(requireBiometry: false), name: "new")
+
+        try store.carryPolicy(from: "old", to: "new")
+
+        let carried = try store.loadPolicyForMutation(name: "new")
+        XCTAssertEqual(carried.pinnedHostKeys, [Data([9])], "pins carried")
+        XCTAssertEqual(carried.reuseSeconds, 30, "reuse carried")
+        XCTAssertNotEqual(carried.requireBiometry, true, "destination's own level kept, not the old key's")
+    }
+
     // MARK: - FilePolicyStore
 
     func testFileStoreRoundTrip() throws {

@@ -163,6 +163,13 @@ public struct KeyStore {
         let key = StoredKey(name: name, dataRepresentation: privateKey.dataRepresentation)
         let pubLine = SSHFormat.authorizedKeysLine(privateKey.publicKey, comment: "fob:\(name)")
         try Data((pubLine + "\n").utf8).write(to: keysDirectory.appendingPathComponent("\(name).pub"))
+        // Record the protection level: the enclave's access control can't be read back from the key
+        // blob, so without this we could never tell afterwards whether a key was Touch-ID-only —
+        // and recreating it on a new Mac would silently downgrade it to any-user-presence. Only
+        // written when true, so a plain userPresence key keeps the "no policy record" default.
+        if requireBiometry {
+            try? savePolicy(KeyPolicy(requireBiometry: true), name: name)
+        }
         return key
     }
 

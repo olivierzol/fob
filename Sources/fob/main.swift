@@ -531,7 +531,7 @@ do {
             // A fob:<name> allowed_signers line ⟺ signing key; carry its principal. nil ⟹ auth-
             // only, so don't touch allowed_signers (avoids adding a spurious line).
             let signingEmail = SSHCheckup.AllowedSigners.principal(signersText, fobKeyName: name)
-            try store.savePolicy(try store.loadPolicyForMutation(name: name), name: temp) // carry pin/reuse/namespaces (fail closed)
+            try store.carryPolicy(from: name, to: temp) // pin/reuse/namespaces (fail closed); keeps the new key's protection level
             try store.rename(from: name, to: "\(name).retired")        // old aside (recoverable)
             try store.rename(from: temp, to: name)                     // new takes the name
             try store.remove(name: "\(name).retired")                  // destroy the old key
