@@ -34,6 +34,12 @@ USAGE:
       Permanently erase a key from the Secure Enclave (asks to confirm; --force
       skips). Remove its public key from any server/host that still trusts it.
 
+  fob rotate <name> [--require-biometry]   then   fob rotate <name> --finalize
+      Replace a key with a fresh Secure Enclave key, keeping the same name so
+      ~/.ssh/config and your git config need no changes. The first step mints the
+      replacement alongside the current key (register its public key on the host);
+      --finalize swaps it in and retires the old one. No downtime, no lockout.
+
   fob checkup
       Read-only SSH hygiene report: flags unencrypted / weak / loosely-permissioned
       on-disk keys, risky ~/.ssh/config directives, and hosts/signing that could move

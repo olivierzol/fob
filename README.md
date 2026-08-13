@@ -249,6 +249,39 @@ It flags:
   *no* Touch ID prompt while they're loaded (fob's own keys are excluded).
 - **Opportunities** — plain-key hosts and non-fob signing keys you could move to fob.
 
+### 🔑 Backup keys, and losing a Mac
+
+A fob key is **device-bound**: it lives in that Mac's Secure Enclave and can't be exported,
+copied, or backed up. That's the whole security property — but it also means a fob key is
+**not recoverable** if the Mac is lost, wiped, or dies.
+
+That's a *lockout* risk, not a *compromise* risk: the on-disk blob is useless on any other
+machine and every use needs your presence, so a stolen Mac doesn't hand anyone your keys.
+
+Plan for it the way you would with a hardware token — keep a **second key registered** on
+anything you'd hate to be locked out of:
+
+- another Mac running fob,
+- a passphrase-protected key kept somewhere safe (password manager, offline storage), or
+- a hardware security key (`ssh-keygen -t ed25519-sk`).
+
+Servers take multiple entries in `~/.ssh/authorized_keys`, and GitHub/GitLab take multiple keys
+per account. Add the backup once and losing a Mac is an inconvenience, not a lockout.
+
+**If you do lose a Mac**, remove its public key from every host and account that trusted it
+(`~/.ssh/authorized_keys`, your git host's SSH-keys page). Nobody else can use that key, but
+pruning it keeps your authorized lists honest.
+
+**Replacing a key on purpose** — rotate without downtime:
+
+```sh
+fob rotate <key>              # mint a replacement alongside the current key
+fob rotate <key> --finalize   # swap it in and retire the old one
+```
+
+The key keeps its name, so `~/.ssh/config` and your git config need no changes. Register the new
+public key on the host between the two steps (the app's **Rotate** page walks through it).
+
 ## Security model
 
 fob is a **presence-gated key store, not a sandbox around your own logged-in session.**
@@ -288,6 +321,7 @@ Two independent audits of this codebase (findings resolved) plus a regression te
 | `fob generate <name> [--require-biometry]` | Create a Secure Enclave key |
 | `fob list` | Print public keys (authorized_keys format) |
 | `fob delete <key> [--force]` | Permanently erase a key from the enclave |
+| `fob rotate <key>` · `fob rotate <key> --finalize` | Replace a key with a fresh one, keeping its name |
 | `fob pin <key> <host>` · `fob unpin <key>` | Restrict a key to a host / remove all pins |
 | `fob reuse <key> <seconds\|off>` | Set the touch-reuse window (max 300 s) |
 | `fob policy` | Show every key's pin + reuse state |
