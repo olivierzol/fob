@@ -15,7 +15,7 @@
 
 <br>
 
-<img src="docs/demo.gif" alt="A git push gated by fob: the Touch ID prompt names the destination — “fob is trying to connect to github.com” — one touch and it’s authenticated." width="760">
+<img src="docs/demo.gif" alt="A git push gated by fob: the Touch ID prompt names the destination — “fob is trying to connect to github.com” — one touch and it’s authenticated." width="640">
 
 <sub>A `git push`, gated by Touch ID. `ssh myserver` gets the same prompt, naming that host.</sub>
 
