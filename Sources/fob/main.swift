@@ -40,6 +40,16 @@ USAGE:
       replacement alongside the current key (register its public key on the host);
       --finalize swaps it in and retires the old one. No downtime, no lockout.
 
+  fob export-profile [--output <path>]
+      Write a portable description of this setup — key names, their policies, your
+      ~/.ssh/config host mappings, and the signing setup — to fob-profile.json
+      (0600). Contains NO key material: Secure Enclave keys can't leave this Mac.
+
+  fob import-profile <profile.json> [--dry-run] [--require-biometry]
+      Recreate that setup on a new Mac: fresh enclave keys under the same names
+      and policies, the same ~/.ssh/config entries, then a checklist of where to
+      register each new public key. --dry-run shows the plan and changes nothing.
+
   fob checkup
       Read-only SSH hygiene report: flags unencrypted / weak / loosely-permissioned
       on-disk keys, risky ~/.ssh/config directives, and hosts/signing that could move
@@ -315,6 +325,12 @@ do {
         for key in keys {
             print(SSHFormat.authorizedKeysLine(try key.publicKey(), comment: "fob:\(key.name)"))
         }
+
+    case "export-profile":
+        try ProfileCommands.export(store: store, arguments: Array(arguments.dropFirst()))
+
+    case "import-profile":
+        try ProfileCommands.importProfile(store: store, arguments: Array(arguments.dropFirst()))
 
     case "checkup":
         // fob keys' base64 blobs, so the ssh-agent check can exclude them.

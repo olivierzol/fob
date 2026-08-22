@@ -196,7 +196,7 @@ enum Setup {
 
     /// Print a +/- unified diff of two config texts (only the changed region is interesting,
     /// but showing context keeps it readable).
-    private static func printDiff(_ old: String, _ new: String) {
+    static func printDiff(_ old: String, _ new: String) {
         for line in TextDiff.lines(old: old, new: new) {
             switch line.kind {
             case .added: print("   + \(line.text)")
@@ -409,7 +409,7 @@ enum Setup {
         return answer
     }
 
-    private static func confirm(_ question: String) -> Bool {
+    static func confirm(_ question: String) -> Bool {
         print("\(question) [Y/n]: ", terminator: "")
         fflush(stdout)
         guard let line = readLine() else { return false }

@@ -86,6 +86,43 @@ public struct Profile: Codable, Equatable {
     }
 }
 
+// MARK: - Export helpers
+
+extension Profile {
+    /// Directives fob understands and regenerates; everything else in a `Host` block is carried
+    /// only as a *name* so the export can warn that it won't survive the move.
+    static let knownDirectives: Set<String> = [
+        "hostname", "user", "port", "identityfile", "identityagent", "identitiesonly",
+    ]
+
+    /// Names of the directives in `alias`'s block that fob does **not** carry (`ProxyJump`,
+    /// `ProxyCommand`, `ForwardAgent`, …). Their values are deliberately not captured: they can
+    /// hold internal hostnames or credentials, and a profile is meant to travel between machines.
+    public static func droppedDirectives(forAlias alias: String, in config: String) -> [String] {
+        var inBlock = false
+        var names: [String] = []
+        for raw in config.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            let lower = line.lowercased()
+            if lower == "host" || lower.hasPrefix("host ") || lower == "match" || lower.hasPrefix("match ") {
+                if inBlock { break }
+                if lower.hasPrefix("host ") {
+                    let tokens = line.dropFirst(5).split(whereSeparator: { $0 == " " || $0 == "\t" })
+                    if tokens.contains(where: { $0 == Substring(alias) }) { inBlock = true }
+                }
+                continue
+            }
+            guard inBlock,
+                  let sep = line.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "=" })
+            else { continue }
+            let key = String(line[..<sep])
+            if !knownDirectives.contains(key.lowercased()), !names.contains(key) { names.append(key) }
+        }
+        return names
+    }
+}
+
 // MARK: - Validation
 
 extension Profile {

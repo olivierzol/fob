@@ -129,6 +129,33 @@ final class ProfileTests: XCTestCase {
                       "names the sibling it would have clobbered")
     }
 
+    // MARK: - Dropped directives (what the export warns about)
+
+    /// Only names are collected, never values — a ProxyCommand can carry internal hosts or
+    /// credentials, and a profile is meant to travel between machines.
+    func testDroppedDirectivesNamesOnlyAndScopedToTheBlock() {
+        let config = """
+        Host web
+          HostName web.example
+          User deploy
+          Port 2222
+          IdentityAgent ~/.fob/agent.sock
+          IdentityFile ~/.ssh/fob_web.pub
+          IdentitiesOnly yes
+          ProxyJump bastion.example
+          ForwardAgent yes
+          # a comment
+
+        Host other
+          RemoteForward 9000 localhost:9000
+        """
+        let dropped = Profile.droppedDirectives(forAlias: "web", in: config)
+        XCTAssertEqual(dropped, ["ProxyJump", "ForwardAgent"])
+        XCTAssertFalse(dropped.contains("RemoteForward"), "stops at the next Host block")
+        XCTAssertFalse(dropped.joined().contains("bastion"), "values are never captured")
+        XCTAssertTrue(Profile.droppedDirectives(forAlias: "missing", in: config).isEmpty)
+    }
+
     // MARK: - Config generation
 
     func testConfigTextAppendsBlocksUsingLocalPaths() {
