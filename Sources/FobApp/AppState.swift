@@ -1247,8 +1247,7 @@ final class AppState: ObservableObject {
     /// hand the new key an open default and drop the old key's pins.
     private func copyPolicy(from: String, to: String) throws {
         guard let store else { return }
-        let policy = try store.loadPolicyForMutation(name: from)
-        try store.savePolicy(policy, name: to)
+        try store.carryPolicy(from: from, to: to)
     }
 
     /// Append an entry to ~/.ssh/allowed_signers (idempotent) so signed commits verify locally.
