@@ -13,6 +13,11 @@ struct Theme {
     let dotBg, chev: Color
     let footBg, footBorder: Color
     let menuBg, menuBorder, hoverBg: Color
+    /// Backdrop painted behind the whole panel. The MenuBarExtra window's own material is
+    /// nearly clear glass, so without this the desktop wallpaper bleeds straight through the
+    /// content — unreadable on anything busy or vivid. Kept a hair under fully opaque so a
+    /// hint of the native vibrancy survives without ever costing contrast.
+    let panelBg: Color
 
     static let accent = Color(.sRGB, red: 0.039, green: 0.518, blue: 1.0)   // #0a84ff
     static let green = Color(.sRGB, red: 0.188, green: 0.820, blue: 0.345)  // #30d158
@@ -26,7 +31,8 @@ struct Theme {
         fieldBg: c(255, 255, 255, 0.7), fieldBorder: c(0, 0, 0, 0.15),
         dotBg: c(0, 0, 0, 0.05), chev: c(199, 199, 204),
         footBg: c(255, 255, 255, 0.6), footBorder: c(0, 0, 0, 0.12),
-        menuBg: c(247, 247, 249, 0.98), menuBorder: c(0, 0, 0, 0.08), hoverBg: c(120, 120, 130, 0.14))
+        menuBg: c(247, 247, 249, 0.98), menuBorder: c(0, 0, 0, 0.08), hoverBg: c(120, 120, 130, 0.14),
+        panelBg: c(246, 246, 248, 0.96))
 
     static let dark = Theme(
         text: c(245, 245, 247), sub: c(152, 152, 157),
@@ -34,7 +40,8 @@ struct Theme {
         fieldBg: c(255, 255, 255, 0.06), fieldBorder: c(255, 255, 255, 0.14),
         dotBg: c(255, 255, 255, 0.08), chev: c(106, 106, 112),
         footBg: c(255, 255, 255, 0.06), footBorder: c(255, 255, 255, 0.12),
-        menuBg: c(46, 46, 50, 0.98), menuBorder: c(255, 255, 255, 0.1), hoverBg: c(255, 255, 255, 0.09))
+        menuBg: c(46, 46, 50, 0.98), menuBorder: c(255, 255, 255, 0.1), hoverBg: c(255, 255, 255, 0.09),
+        panelBg: c(40, 40, 44, 0.96))
 
     private static func c(_ r: Double, _ g: Double, _ b: Double, _ a: Double = 1) -> Color {
         Color(.sRGB, red: r / 255, green: g / 255, blue: b / 255, opacity: a)
@@ -76,6 +83,7 @@ struct ContentView: View {
             footer
         }
         .frame(width: width)
+        .background(t.panelBg.ignoresSafeArea())
         .overlayPreferenceValue(MenuAnchorKey.self) { anchors in
             dropdownOverlay(anchors)
         }
