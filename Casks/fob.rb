@@ -13,8 +13,7 @@ cask "fob" do
   version "0.17.0"
   sha256 "3dbf6af2fcc264239fe69465be3f52c8305711e326c64e2f81f1d91d977806b4"
 
-  url "https://github.com/olivierzol/fob/releases/download/v#{version}/fob-#{version}.zip",
-      verified: "github.com/olivierzol/fob/"
+  url "https://github.com/olivierzol/fob/releases/download/v#{version}/fob-#{version}.zip"
   name "fob"
   desc "Secure Enclave SSH keys gated by Touch ID"
   homepage "https://github.com/olivierzol/fob"
