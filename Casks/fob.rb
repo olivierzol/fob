@@ -10,8 +10,8 @@
 # Scripts/release.sh). Homebrew downloads the already notarized + stapled .app, so
 # Gatekeeper and notifications (with the fob icon) work on every user's machine.
 cask "fob" do
-  version "0.17.0"
-  sha256 "3dbf6af2fcc264239fe69465be3f52c8305711e326c64e2f81f1d91d977806b4"
+  version "0.17.1"
+  sha256 "94982b96e81fe8c350ead7064494e8abf796063ecf960eda84e3db3eb4151a77"
 
   url "https://github.com/olivierzol/fob/releases/download/v#{version}/fob-#{version}.zip"
   name "fob"
