@@ -323,12 +323,9 @@ public final class Agent: @unchecked Sendable {
 
         let context = LAContext()
         // macOS prepends "fob is trying to " and appends the Touch-ID/password line.
-        // Line breaks render, so lead with the destination and put the requesting
-        // process + key on a second line for readability.
-        context.localizedReason = """
-        connect to \(destination)
-        Requested by \(peer) with key “\(key.name)”
-        """
+        // Since macOS 26 the whole reason is the dialog's *bold* headline (the separate
+        // app-name row is gone), so it has to stay short — see `authReason`.
+        context.localizedReason = Self.authReason(destination: destination, peer: peer, keyName: key.name)
         log("sign request from \(peer) for \(destination) with key '\(key.name)' — waiting for user approval")
         do {
             let signature = try key.privateKey(context: context).signature(for: dataToSign)
@@ -383,7 +380,7 @@ public final class Agent: @unchecked Sendable {
         }
 
         let context = LAContext()
-        context.localizedReason = "sign \(purpose)\nwith key “\(key.name)” · requested by \(peer)"
+        context.localizedReason = Self.signingReason(purpose: purpose, peer: peer, keyName: key.name)
         log("sign request from \(peer) to sign \(purpose) with key '\(key.name)' — waiting for user approval")
         do {
             let signature = try key.privateKey(context: context).signature(for: data)
@@ -402,6 +399,24 @@ public final class Agent: @unchecked Sendable {
                      key: key.name, destination: purpose, peer: peer)
             return Data([AgentMessage.failure.rawValue])
         }
+    }
+
+    /// The Touch ID prompt's reason for an SSH authentication.
+    ///
+    /// macOS wraps it as "fob is trying to \(reason)." and renders the whole thing as the
+    /// dialog's bold headline, so it stays short. The key name is dropped when it is already
+    /// the destination's alias — the common case, since `SessionBinding.describe` prefers the
+    /// signing key's name as the alias — and kept when it isn't, notably for
+    /// "an UNKNOWN destination", where naming the key matters most.
+    static func authReason(destination: String, peer: String, keyName: String) -> String {
+        let keyPart = destination.hasPrefix("\(keyName) (") ? "" : " with key “\(keyName)”"
+        return "connect to \(destination)\nfor \(peer)\(keyPart)"
+    }
+
+    /// The Touch ID prompt's reason for an SSHSIG (git commit) signature. There is no
+    /// destination here, so the key name always shows; same shape as `authReason`.
+    static func signingReason(purpose: String, peer: String, keyName: String) -> String {
+        "sign \(purpose)\nfor \(peer) with key “\(keyName)”"
     }
 
     /// Strip control characters (and cap length) from an SSHSIG namespace before it's shown

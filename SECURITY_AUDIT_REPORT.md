@@ -55,7 +55,7 @@ State this in the README. It is the single most important thing for users.
   (`Agent.swift:256-260`), so a background process cannot use a key without a prompt…
   (but see the reuse-window caveat below).
 - **Wrong-destination use of a pinned key.** With pinning, a key signs only for a
-  bound, cryptographically-verified host key (`Agent.swift:230-240`).
+  bound, cryptographically-verified host key (`Agent.swift:296-305`).
 
 **fob does NOT (and largely cannot) protect against — by design:**
 
