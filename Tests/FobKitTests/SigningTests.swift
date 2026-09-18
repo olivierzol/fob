@@ -60,6 +60,57 @@ final class SigningTests: XCTestCase {
         XCTAssertEqual(Agent.sanitizeNamespace(String(repeating: "x", count: 200)).count, 64)
     }
 
+    // MARK: Touch ID prompt text
+
+    /// macOS renders the whole reason as the dialog's bold headline, so the key name is
+    /// dropped when the destination alias already names it.
+    func testAuthReasonDropsKeyNameWhenItIsTheDestinationAlias() {
+        XCTAssertEqual(
+            Agent.authReason(destination: "github-ousson (github.com)", peer: "ssh (pid 10110)",
+                             keyName: "github-ousson"),
+            "connect to github-ousson (github.com)\nfor ssh (pid 10110)")
+
+        // An unverified binding still carries the alias up front.
+        XCTAssertEqual(
+            Agent.authReason(destination: "marvin (192.168.1.20) (unverified)", peer: "ssh (pid 1234)",
+                             keyName: "marvin"),
+            "connect to marvin (192.168.1.20) (unverified)\nfor ssh (pid 1234)")
+    }
+
+    func testAuthReasonKeepsKeyNameWhenItIsNotRedundant() {
+        XCTAssertEqual(
+            Agent.authReason(destination: "github-feedly (github.com)", peer: "ssh (pid 10110)",
+                             keyName: "github-ousson"),
+            "connect to github-feedly (github.com)\nfor ssh (pid 10110) with key “github-ousson”")
+
+        // A prefix that isn't the whole alias must not count as redundant.
+        XCTAssertEqual(
+            Agent.authReason(destination: "github-ousson-old (github.com)", peer: "ssh (pid 1)",
+                             keyName: "github-ousson"),
+            "connect to github-ousson-old (github.com)\nfor ssh (pid 1) with key “github-ousson”")
+    }
+
+    /// The case where naming the key matters most: a client that sent no session binding.
+    func testAuthReasonNamesKeyForUnknownDestination() {
+        XCTAssertEqual(
+            Agent.authReason(destination: SessionBinding.describe([]), peer: "ssh (pid 1234)",
+                             keyName: "marvin"),
+            "connect to an UNKNOWN destination\nfor ssh (pid 1234) with key “marvin”")
+    }
+
+    func testAuthReasonMultiHopDestination() {
+        XCTAssertEqual(
+            Agent.authReason(destination: "bastion (10.0.0.1) → marvin (192.168.1.20)",
+                             peer: "ssh (pid 99)", keyName: "marvin"),
+            "connect to bastion (10.0.0.1) → marvin (192.168.1.20)\nfor ssh (pid 99) with key “marvin”")
+    }
+
+    func testSigningReasonAlwaysNamesTheKey() {
+        XCTAssertEqual(
+            Agent.signingReason(purpose: "a git commit", peer: "git (pid 77)", keyName: "github-ousson"),
+            "sign a git commit\nfor git (pid 77) with key “github-ousson”")
+    }
+
     // MARK: Namespace policy
 
     func testAllowsSignatureNamespaces() {

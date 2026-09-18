@@ -152,7 +152,11 @@ Git hosts have no shell, so instead of `ssh-copy-id` you add the key on the web.
 
 The Touch ID prompt tells you **where** you're connecting, not just that *something* wants a signature:
 
-> connect to **marvin (192.168.1.20)** — requested by ssh (pid 1234) with key "marvin"
+> **fob is trying to connect to marvin (192.168.1.20) for ssh (pid 1234).**
+> Touch ID to continue with fob.
+
+The signing key is named too — `with key “marvin”` — whenever it isn’t already the alias
+shown, which is exactly when it matters: a client that identifies no host.
 
 Modern ssh clients (OpenSSH 8.9+) send a `session-bind@openssh.com` message carrying the server's host key and a signature over the session ID. fob **verifies that signature** (Ed25519 / ECDSA / RSA) and resolves the host to a name from `known_hosts` and your ssh config — so a local process can't claim a destination it didn't actually connect to. A client that omits the binding shows as **"an UNKNOWN destination"**, so silence is visible too.
 

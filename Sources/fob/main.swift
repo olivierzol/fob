@@ -618,7 +618,7 @@ do {
         }
         let key = try store.find(name: name)
         let context = LAContext()
-        context.localizedReason = "test-sign with key \"\(name)\""
+        context.localizedReason = "test-sign with key “\(name)”"
         let payload = Data("fob test payload".utf8)
         let signature = try key.privateKey(context: context).signature(for: payload)
         guard try key.publicKey().isValidSignature(signature, for: payload) else {
