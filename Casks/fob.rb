@@ -9,6 +9,11 @@
 # On each release, bump `version` and `sha256` (the .zip's SHA-256, printed by
 # Scripts/release.sh). Homebrew downloads the already notarized + stapled .app, so
 # Gatekeeper and notifications (with the fob icon) work on every user's machine.
+#
+# On upgrade, Homebrew keeps the existing fob.app directory and swaps only its
+# contents, so macOS doesn't treat fob as uninstalled and drop its permissions.
+# Gatekeeper caches verdicts per bundle-directory inode, which is why
+# Scripts/build-app.sh refuses to put an ad-hoc build at the cask's path.
 cask "fob" do
   version "0.17.1"
   sha256 "94982b96e81fe8c350ead7064494e8abf796063ecf960eda84e3db3eb4151a77"

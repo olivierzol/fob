@@ -3,8 +3,13 @@
 # Builds fob.app (the menu-bar agent) and installs it to ~/Applications, plus the
 # `fob` CLI to ~/.fob/bin. Zero third-party tooling — just swift + codesign.
 #
-#   ./Scripts/build-app.sh            build + install to ~/Applications
+#   ./Scripts/build-app.sh                build + install to ~/Applications
 #   ./Scripts/build-app.sh --no-install   build ./fob.app only
+#   ./Scripts/build-app.sh --force        install even over the Homebrew cask's fob.app
+#
+# An ad-hoc build refuses to overwrite a fob.app that the Homebrew cask manages (see
+# the install step for why). Test such a build in place with `open ./fob.app`, or
+# refresh the cask copy with `brew reinstall --cask fob`.
 #
 set -euo pipefail
 
@@ -25,7 +30,26 @@ INSTALL_DIR="$HOME/Applications"
 CLI_DIR="$HOME/.fob/bin"
 
 install=1
-[[ "${1:-}" == "--no-install" ]] && install=0
+force="${FOB_INSTALL_FORCE:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --no-install) install=0 ;;
+        --force)      force=1 ;;
+        *) echo "usage: $0 [--no-install] [--force]" >&2; exit 2 ;;
+    esac
+done
+
+# True when $INSTALL_DIR/$APP is the copy the Homebrew cask installed: the Caskroom
+# keeps a symlink to wherever the cask's `app` artifact was moved.
+cask_manages_install() {
+    local room link
+    for room in "$(brew --prefix 2>/dev/null || true)/Caskroom" /opt/homebrew/Caskroom /usr/local/Caskroom; do
+        for link in "$room"/fob/*/"$APP"; do
+            [[ -L "$link" && "$(readlink "$link")" == "$INSTALL_DIR/$APP" ]] && return 0
+        done
+    done
+    return 1
+}
 
 echo "==> Building release binaries"
 swift build -c release
@@ -122,8 +146,27 @@ fi
 codesign --verify --strict --verbose=2 "$APP" && echo "    signature OK"
 
 if [[ "$install" == "1" ]]; then
+    # Never drop an ad-hoc build into the cask-managed fob.app. Gatekeeper caches its
+    # verdict per bundle-directory inode, and Homebrew keeps that directory across
+    # upgrades (it only swaps the contents), so the ad-hoc build's "unsigned, not
+    # notarized" entry is inherited by the next `brew upgrade` and the notarized release
+    # is refused with "Apple can't check … for malicious software"
+    # (docs/RELEASING.md, "Gatekeeper troubleshooting").
+    if [[ "$SIGN_IDENTITY" == "-" && "$force" != "1" ]] && cask_manages_install; then
+        cat >&2 <<REFUSE
+error: $INSTALL_DIR/$APP is managed by the Homebrew cask; not installing an ad-hoc build over it.
+
+  Test the build in place instead:   open ./$APP
+  Refresh the cask copy:             brew reinstall --cask fob
+  Really overwrite it:               $0 --force
+REFUSE
+        exit 1
+    fi
+
     echo "==> Installing to $INSTALL_DIR/$APP"
     mkdir -p "$INSTALL_DIR"
+    # rm + cp (not cp into the existing directory) gives the bundle a fresh inode, so
+    # Gatekeeper scans it anew instead of reusing a cached verdict.
     rm -rf "$INSTALL_DIR/$APP"
     cp -R "$APP" "$INSTALL_DIR/$APP"
 
