@@ -64,13 +64,20 @@ Then open **fob** from the menu bar and turn on **Launch at login**.
 > ```
 > Make it the default for future installs/upgrades with `export HOMEBREW_CASK_OPTS="--appdir=~/Applications"` in your shell profile.
 
+> **macOS says "Apple can't check fob for malicious software"?** fob is notarized; that
+> dialog almost always means Gatekeeper is replaying a stale cached verdict for the app's
+> folder (for example after an unsigned dev build lived at the same path). Quit fob,
+> `rm -rf` the `fob.app` folder, and `brew reinstall --cask fob` so Gatekeeper scans a
+> fresh copy — then re-enable *Launch at login*. Details and how to verify the signature
+> yourself: [`docs/RELEASING.md`](docs/RELEASING.md#gatekeeper-troubleshooting).
+
 ### From source
 
 ```sh
 ./Scripts/build-app.sh      # builds fob.app → ~/Applications and symlinks the CLI
 ```
 
-Ad-hoc-signed by default (fine for local use). Set `FOB_SIGN_IDENTITY` for a real signature; see [`docs/RELEASING.md`](docs/RELEASING.md) for notarized / Homebrew builds. CLI only: `swift build -c release`.
+Ad-hoc-signed by default (fine for local use). If the Homebrew cask is installed too, an ad-hoc build won't overwrite it — use `--no-install` and `open ./fob.app`. Set `FOB_SIGN_IDENTITY` for a real signature; see [`docs/RELEASING.md`](docs/RELEASING.md) for notarized / Homebrew builds. CLI only: `swift build -c release`.
 
 ## Quick start
 
